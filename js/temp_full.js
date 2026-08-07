@@ -1,0 +1,3741 @@
+    "use strict";
+
+
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+
+    const style = document.createElement('style');
+    style.textContent = `
+      .app-window, .window-header, .window-drag-line, .desktop-icon, #taskbar, .taskbar-btn,
+      .minimized-tab, .tile, .shade-panel, #app-drawer, .power-option, .context-item {
+        touch-action: manipulation;
+      }
+      .app-window.dragging, .desktop-icon.dragging {
+        transition: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+
+
+    function attachIconHandlers(icon) {
+      let mouseDragged = false;
+      icon.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'app', id: icon.dataset.app }));
+        document.getElementById('uninstall-dropzone').classList.add('active');
+        icon.style.opacity = '0.5';
+        mouseDragged = false;
+      });
+      icon.addEventListener('dragend', (e) => {
+        document.getElementById('uninstall-dropzone').classList.remove('active');
+        icon.style.opacity = '';
+        mouseDragged = true;
+        setTimeout(() => { mouseDragged = false; }, 100);
+      });
+      icon.addEventListener('click', (e) => {
+  if (mouseDragged) {
+    mouseDragged = false;
+    return;
+  }
+  const rect = icon.getBoundingClientRect();
+  focusOrCreate(icon.dataset.app, null, rect);
+});
+
+
+      let longPressTimer = null;
+      let isDragging = false;
+      let cloneIcon = null;
+      let startX = 0, startY = 0;
+      let currentDropTarget = null;
+      let touchMoved = false;
+      let touchEnded = false;
+
+
+      const clearLongPress = () => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      };
+
+
+      const onTouchStart = (e) => {
+        const touch = e.touches[0];
+        startX = touch.clientX;
+        startY = touch.clientY;
+        touchMoved = false;
+        touchEnded = false;
+        isDragging = false;
+        longPressTimer = setTimeout(() => {
+          if (!touchMoved) {
+            isDragging = true;
+            cloneIcon = icon.cloneNode(true);
+            cloneIcon.style.position = 'fixed';
+            cloneIcon.style.zIndex = '1000';
+            cloneIcon.style.pointerEvents = 'none';
+            cloneIcon.style.opacity = '0.8';
+            cloneIcon.style.transform = 'scale(1.1)';
+            cloneIcon.style.left = (startX - 48) + 'px';
+            cloneIcon.style.top = (startY - 48) + 'px';
+            document.body.appendChild(cloneIcon);
+            icon.style.opacity = '0.3';
+            document.getElementById('uninstall-dropzone').classList.add('active');
+          }
+        }, 500);
+      };
+
+
+      const onTouchMove = (e) => {
+        touchMoved = true;
+        clearLongPress();
+        if (!isDragging || !cloneIcon) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        cloneIcon.style.left = (touch.clientX - 48) + 'px';
+        cloneIcon.style.top = (touch.clientY - 48) + 'px';
+
+
+        const elemUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+        if (elemUnder) {
+          const dropZone = elemUnder.closest('#uninstall-dropzone');
+          if (dropZone) {
+            currentDropTarget = dropZone;
+            dropZone.classList.add('active');
+          } else {
+            if (currentDropTarget) currentDropTarget.classList.remove('active');
+            currentDropTarget = null;
+          }
+        }
+      };
+
+
+      const onTouchEnd = (e) => {
+        clearLongPress();
+        touchEnded = true;
+
+
+        if (isDragging) {
+          if (cloneIcon) { cloneIcon.remove(); cloneIcon = null; }
+          icon.style.opacity = '';
+          document.getElementById('uninstall-dropzone').classList.remove('active');
+          if (currentDropTarget) {
+            currentDropTarget.classList.remove('active');
+            const appId = icon.dataset.app;
+            if (state.installedApps.has(appId) && !preinstalledApps.some(a => a.id === appId)) {
+              state.installedApps.delete(appId);
+              fs.removeApp(appId);
+              SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
+              renderAppDrawer();
+            }
+          } else {
+            const touch = e.changedTouches[0];
+            const desktopEl = document.getElementById('desktop');
+            const rect = desktopEl.getBoundingClientRect();
+            let x = touch.clientX - rect.left - 48;
+            let y = touch.clientY - rect.top - 48;
+            x = snapToGrid(x);
+            y = snapToGrid(y);
+            x = Math.max(0, Math.min(x, rect.width - 96));
+            y = Math.max(0, Math.min(y, rect.height - 96));
+            icon.style.left = x + 'px';
+            icon.style.top = y + 'px';
+          }
+          isDragging = false;
+        } else {
+          if (!touchMoved) {
+            setTimeout(() => { if (!isDragging) { focusOrCreate(icon.dataset.app); } }, 10);
+          }
+        }
+      };
+
+
+      const onTouchCancel = () => {
+        clearLongPress();
+        if (cloneIcon) cloneIcon.remove();
+        icon.style.opacity = '';
+        document.getElementById('uninstall-dropzone').classList.remove('active');
+        isDragging = false;
+      };
+
+
+      icon.addEventListener('touchstart', onTouchStart, { passive: false });
+      icon.addEventListener('touchmove', onTouchMove, { passive: false });
+      icon.addEventListener('touchend', onTouchEnd);
+      icon.addEventListener('touchcancel', onTouchCancel);
+    }
+
+
+    const SystemAPI = {
+      components: new Map(),
+      registerComponent(type, implementation) { this.components.set(type, implementation); },
+      getComponent(type) { return this.components.get(type) || null; },
+      initDefaultComponents() {
+        if (!this.getComponent('desktop')) {
+          this.registerComponent('desktop', {
+            renderIcons: (apps) => {
+              const desktopEl = document.getElementById('desktop');
+              const widget = document.getElementById('widget');
+              desktopEl.innerHTML = '';
+              if (widget) desktopEl.appendChild(widget);
+              let col = 0, row = 0;
+              const cols = 6;
+              apps.forEach(app => {
+                if (!app.hidden) {
+                  const icon = document.createElement('div');
+                  icon.className = 'desktop-icon';
+                  icon.dataset.app = app.id;
+                  icon.style.left = (120 + col * 120) + 'px';
+                  icon.style.top = (120 + row * 120) + 'px';
+                  icon.innerHTML = `<span class="material-icons">${app.icon || 'apps'}</span><span>${app.name}</span>`;
+                  icon.setAttribute('draggable', 'true');
+                  desktopEl.appendChild(icon);
+                  col = (col + 1) % cols;
+                  if (col === 0) row++;
+                }
+              });
+              desktopEl.addEventListener('dragover', e => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'copy';
+              });
+              desktopEl.addEventListener('drop', e => {
+                e.preventDefault();
+                const raw = e.dataTransfer.getData('text/plain');
+                if (!raw) return;
+                const data = JSON.parse(raw);
+                if (data.type === 'app') {
+                  const app = state.installedApps.get(data.id);
+                  if (app && !app.hidden) {
+                    let existingIcon = document.querySelector(`.desktop-icon[data-app="${data.id}"]`);
+                    if (!existingIcon) {
+                      existingIcon = document.createElement('div');
+                      existingIcon.className = 'desktop-icon';
+                      existingIcon.dataset.app = data.id;
+                      existingIcon.innerHTML = `<span class="material-icons">${app.icon || 'apps'}</span><span>${app.name}</span>`;
+                      existingIcon.setAttribute('draggable', 'true');
+                      desktopEl.appendChild(existingIcon);
+                      attachIconHandlers(existingIcon);
+                    }
+                    const rect = desktopEl.getBoundingClientRect();
+                    let x = e.clientX - rect.left - 48;
+                    let y = e.clientY - rect.top - 48;
+                    x = snapToGrid(x);
+                    y = snapToGrid(y);
+                    x = Math.max(0, Math.min(x, rect.width - 96));
+                    y = Math.max(0, Math.min(y, rect.height - 96));
+                    existingIcon.style.left = x + 'px';
+                    existingIcon.style.top = y + 'px';
+                  }
+                }
+              });
+              document.querySelectorAll('.desktop-icon').forEach(i => attachIconHandlers(i));
+            }
+          });
+        }
+
+
+       if (!this.getComponent('qsPanel')) {
+  this.registerComponent('qsPanel', {
+    render: (tiles) => {
+        const cont = document.getElementById('tiles-container');
+        cont.innerHTML = '';
+        tiles.forEach((t, idx) => {
+            let tileDef = window.availableTiles.find(td => td.id === t.id);
+            if (!tileDef) {
+                tileDef = { icon: t.icon || 'help', label: t.label || t.id, type: 'switch' };
+            }
+            const isSwitch = tileDef && tileDef.type === 'switch';
+            const isApp = tileDef && tileDef.launchApp;
+            const hasPopup = tileDef && typeof tileDef.overlayContent === 'function';
+            const isHalf = t.width === 'half';
+
+            const el = document.createElement('div');
+            el.className = 'tile';
+            if (isApp) el.classList.add('tile-app');
+            else if (isSwitch) {
+                el.classList.add('tile-switch');
+                if (hasPopup) el.classList.add('has-popup');
+            }
+            if (t.active) el.classList.add('active');
+            el.style.width = isHalf ? '64px' : '140px';
+            el.draggable = true;
+            el.dataset.index = idx;
+            el.dataset.id = t.id;
+            if (isHalf) el.classList.add('half');
+
+            // Единая структура для всех плиток
+            el.innerHTML = `
+                <div class="tile-icon-wrapper">
+                    <span class="material-icons">${tileDef.icon}</span>
+                </div>
+                <div class="tile-body">
+                    <span class="tile-text">${tileDef.label}</span>
+                </div>
+            `;
+
+            // Обработчики кликов
+            el.addEventListener('click', (e) => {
+                const target = e.target;
+
+                // Half-режим: только переключение, попап не открывается
+                if (isHalf) {
+                    t.active = !t.active;
+                    el.classList.toggle('active', t.active);
+                    localStorage.setItem('tiles', JSON.stringify(state.tiles));
+                    if (typeof tileDef.action === 'function') tileDef.action();
+                    return;
+                }
+
+                // Плитка с попапом (full): клик по обёртке иконки переключает, по телу — открывает попап
+                if (hasPopup) {
+                    if (target.closest('.tile-icon-wrapper')) {
+                        t.active = !t.active;
+                        el.classList.toggle('active', t.active);
+                        localStorage.setItem('tiles', JSON.stringify(state.tiles));
+                        if (typeof tileDef.action === 'function') tileDef.action();
+                        return;
+                    }
+                    if (target.closest('.tile-body')) {
+    BaklavaAPI.openPopup({
+        sourceElement: el,
+        contentElement: tileDef.overlayContent(),
+        position: 'center',          // ← автоматически рядом
+        draggable: false,
+        overlayStyle: { background: 'rgba(0,0,0,0.4)' },
+        closeOnOverlayClick: true,
+        closeOnSourceRemove: true,
+        morphOptions: { duration: 0.4 }
+    });
+    return;
+}
+                    return;
+                }
+
+                // Обычный переключатель
+                if (isSwitch) {
+                    t.active = !t.active;
+                    el.classList.toggle('active', t.active);
+                    localStorage.setItem('tiles', JSON.stringify(state.tiles));
+                    if (typeof tileDef.action === 'function') tileDef.action();
+                    return;
+                }
+
+
+                // Плитка-приложение
+if (tileDef?.launchApp && tileDef.appId) {
+  const rect = el.getBoundingClientRect();
+  closeAllShade(); // закрываем QS перед анимацией
+  // createWindow с анимацией из rect
+  createWindow(tileDef.appId, null, null, rect);
+  return;
+}
+            });
+
+            // Долгое нажатие / ПКМ для half с попапом
+            if (isHalf && hasPopup) {
+                el.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    BaklavaAPI.openPopup({
+    sourceElement: el,
+    contentElement: tileDef.overlayContent(), // может быть строка или узел
+    position: 'center',
+    draggable: false,
+    overlayStyle: { background: 'rgba(0,0,0,0.4)' },
+    closeOnOverlayClick: true,
+    closeOnSourceRemove: true,
+    morphOptions: { duration: 0.4 }
+});
+                });
+                let pressTimer;
+                el.addEventListener('touchstart', () => {
+                    pressTimer = setTimeout(() => {
+                        BaklavaAPI.openPopup({
+    sourceElement: el,
+    contentElement: tileDef.overlayContent(), // может быть строка или узел
+    position: 'center',
+    draggable: false,
+    overlayStyle: { background: 'rgba(0,0,0,0.4)' },
+    closeOnOverlayClick: true,
+    closeOnSourceRemove: true,
+    morphOptions: { duration: 0.4 }
+});
+                    }, 600);
+                }, { passive: true });
+                el.addEventListener('touchend', () => clearTimeout(pressTimer));
+                el.addEventListener('touchmove', () => clearTimeout(pressTimer));
+            }
+
+            cont.appendChild(el);
+        });
+    }
+  });
+}
+
+
+        if (!this.getComponent('notificationPanel')) {
+          this.registerComponent('notificationPanel', {
+            render: (notifications) => {
+              const area = document.getElementById('notifications-area');
+              if (!state.notificationsEnabled) { area.innerHTML = ''; return; }
+              const groups = {};
+              notifications.forEach(n => { if (!groups[n.app]) groups[n.app] = []; groups[n.app].push(n); });
+              area.innerHTML = '';
+              Object.entries(groups).forEach(([app, notifs]) => {
+                const card = document.createElement('div');
+                card.className = 'notification-card';
+                card.innerHTML = `<span class="material-icons">${notifs[0].icon}</span><div><strong>${app}</strong><br>${notifs.length} уведомлений</div><button class="clear-group"><span class="material-icons">delete</span></button>`;
+                card.onclick = (e) => { if (!e.target.closest('button')) { closeShade(); focusOrCreate(app); } };
+                card.querySelector('.clear-group').onclick = e => { e.stopPropagation(); state.notifications = state.notifications.filter(n => n.app !== app); this.render(state.notifications); };
+                area.appendChild(card);
+              });
+            }
+          });
+        }
+
+
+        if (!this.getComponent('statusBar')) {
+          this.registerComponent('statusBar', {
+            updateTime: () => { document.getElementById('live-time').textContent = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}); },
+            updateBattery: (level) => { document.getElementById('battery-level').style.width = level + '%'; document.getElementById('battery-percent').textContent = Math.round(level) + '%'; }
+          });
+        }
+
+
+        if (!this.getComponent('taskbar')) {
+          this.registerComponent('taskbar', {
+            updateCounter: (count) => { document.getElementById('window-count-text').textContent = `${count} ок.`; },
+          });
+        }
+      }
+    };
+
+
+    const GRID_SIZE = 120;
+
+    window.liveWallpaperProviders = new Map();
+window.currentLiveProvider = null;
+window.liveWallpaperInterval = null;
+    const state = {
+    // Глобальное хранилище провайдеров живых обоев (доступно до создания BaklavaAPI)
+  theme: localStorage.getItem('android16-theme') || 'light',
+  notificationsEnabled: true,
+  accentColor: localStorage.getItem('accent') || '#6750A4',
+  wallpaper: localStorage.getItem('wallpaper') || 'grad1',
+  windows: new Map(), nextZIndex: 100,
+  tiles: JSON.parse(localStorage.getItem('tiles')) || [
+  { id:'theme_toggle', label:'Тёмная тема', icon:'dark_mode', active:false, width:'normal' },
+  { id:'dnd', label:'Не беспокоить', icon:'do_not_disturb_on', active:false, width:'normal' }
+],
+  downloads: new Map(),
+  installedApps: new Map(),
+  widgets: new Map(),
+  widgetInstances: new Map(),
+  notifications: [],
+  appTilesMap: new Map(JSON.parse(localStorage.getItem('appTilesMap') || '[]'))
+};
+
+// Глобальный список всех доступных плиток
+window.availableTiles = [];
+
+// Зарегистрировать плитки от приложения
+window.registerAppTiles = function(appId, tiles) {
+  if (!tiles || !tiles.length) return;
+  if (!state.appTilesMap.has(appId)) state.appTilesMap.set(appId, []);
+  const owned = state.appTilesMap.get(appId);
+  tiles.forEach(tile => {
+    // Запоминаем id плитки за приложением (для удаления)
+    if (!owned.includes(tile.id)) {
+      owned.push(tile.id);
+    }
+    // Добавляем плитку в глобальный список, если её там ещё нет
+    if (!window.availableTiles.some(t => t.id === tile.id)) {
+      window.availableTiles.push(tile);
+    }
+  });
+  localStorage.setItem('appTilesMap', JSON.stringify(Array.from(state.appTilesMap.entries())));
+  if (typeof renderTileEditor === 'function') renderTileEditor();
+  if (typeof renderTiles === 'function') renderTiles();
+};
+
+// Удалить плитки приложения
+window.unregisterAppTiles = function(appId) {
+  if (!state.appTilesMap.has(appId)) return;
+  const tileIds = state.appTilesMap.get(appId);
+  window.availableTiles = window.availableTiles.filter(t => !tileIds.includes(t.id));
+  state.appTilesMap.delete(appId);
+  localStorage.setItem('appTilesMap', JSON.stringify(Array.from(state.appTilesMap.entries())));
+  if (typeof renderTileEditor === 'function') renderTileEditor();
+  if (typeof renderTiles === 'function') renderTiles();
+};
+    const body = document.body, desktop = document.getElementById('desktop'), windowsLayer = document.getElementById('windows-layer');
+    const qsPanel = document.getElementById('qs-panel'), notifPanel = document.getElementById('notif-panel'), shadeOverlay = document.getElementById('shade-overlay');
+    const appDrawer = document.getElementById('app-drawer'), appDrawerOverlay = document.getElementById('app-drawer-overlay');
+    const progressIndicator = document.getElementById('progress-indicator'), globalProgressFill = document.getElementById('global-progress-fill');
+    const brightnessOverlay = document.getElementById('brightness-overlay'), contextMenu = document.getElementById('context-menu');
+    const fullscreenPreview = document.getElementById('fullscreen-preview');
+    const statusBar = document.getElementById('status-bar');
+    const taskbar = document.getElementById('taskbar');
+    /**
+ * Анимация изменения размеров, позиции и скругления элемента.
+ * @param {HTMLElement} element - целевой элемент
+ * @param {Object} fromRect - {left, top, width, height, borderRadius}
+ * @param {Object} toRect - {left, top, width, height, borderRadius}
+ * @param {Object} [options] - {duration, easing, onComplete}
+ */
+function animateMorph(element, fromRect, toRect, options = {}) {
+    const duration = options.duration || 0.4;
+    const easing = options.easing || 'cubic-bezier(0.2, 0.9, 0.4, 1)'; // плавный стандарт
+    const onComplete = options.onComplete || (() => {});
+
+    const prevOverflow = element.style.overflow;
+    element.style.overflow = 'hidden';
+
+    element.style.position = 'fixed';
+    element.style.left = fromRect.left + 'px';
+    element.style.top = fromRect.top + 'px';
+    element.style.width = fromRect.width + 'px';
+    element.style.height = fromRect.height + 'px';
+    if (fromRect.borderRadius !== undefined) {
+        element.style.borderRadius = fromRect.borderRadius;
+    }
+    element.style.transition = 'none';
+    element.offsetHeight; // reflow
+
+    element.style.transition = `all ${duration}s ${easing}`;
+    element.style.left = toRect.left + 'px';
+    element.style.top = toRect.top + 'px';
+    element.style.width = toRect.width + 'px';
+    element.style.height = toRect.height + 'px';
+    if (toRect.borderRadius !== undefined) {
+        element.style.borderRadius = toRect.borderRadius;
+    }
+
+    const onTransitionEnd = () => {
+        element.removeEventListener('transitionend', onTransitionEnd);
+        element.style.transition = '';
+        element.style.overflow = prevOverflow;
+        onComplete();
+    };
+    element.addEventListener('transitionend', onTransitionEnd);
+    // Страховка
+    setTimeout(() => {
+        if (element.style.transition !== '') onTransitionEnd();
+    }, duration * 1000 + 100);
+}
+
+const PopupManager = {
+    popups: [],
+    nextZIndex: 700,
+
+    register(popup) {
+        this.popups.push(popup);
+        this.updateZIndices();
+    },
+
+    unregister(popup) {
+        const idx = this.popups.indexOf(popup);
+        if (idx !== -1) this.popups.splice(idx, 1);
+        this.updateZIndices();
+    },
+
+    updateZIndices() {
+        this.popups.forEach((p, i) => {
+            p.container.style.zIndex = this.nextZIndex + i * 2;
+            if (p.overlay) p.overlay.style.zIndex = this.nextZIndex + i * 2 - 1;
+        });
+    },
+
+    closeTop() {
+        if (this.popups.length > 0) {
+            const top = this.popups[this.popups.length - 1];
+            top.close();
+        }
+    }
+};
+
+class BaklavaPopup {
+    constructor(options) {
+        this.id = Date.now() + Math.random();
+        this.options = options;
+        this.sourceElement = options.sourceElement || null;
+        this.overlay = null;
+        this.container = null;          // исходный элемент, перемещённый в body
+        this.dragHint = null;
+        this.dropZone = null;
+        this.draggable = options.draggable || false;
+        this.closeOnOverlayClick = options.closeOnOverlayClick !== false;
+        this.closeOnSourceRemove = options.closeOnSourceRemove !== false;
+        this._onClose = options.onClose || (() => {});
+        this._morphOptions = options.morphOptions || {};
+        this._closed = false;
+        this._mutationObserver = null;
+        this._placeholder = null;
+        this.maxWidth = options.maxWidth || '90vw';
+        this.maxHeight = options.maxHeight || '90vh';
+        this._opening = false;
+        this._targetRect = null;
+
+        // Подготавливаем контент попапа
+        let content = options.contentElement;
+        if (typeof content === 'string') {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = content;
+            this.popupContent = wrapper;
+        } else if (content instanceof Node) {
+            this.popupContent = content;
+        } else {
+            console.error('BaklavaPopup: contentElement must be string or Node');
+            this.popupContent = document.createElement('div');
+        }
+
+        // Сохраняем всё важное от исходного элемента
+        if (this.sourceElement) {
+            this._originalParent = this.sourceElement.parentNode;
+            this._originalNextSibling = this.sourceElement.nextSibling;
+            this._originalRect = this.sourceElement.getBoundingClientRect();
+            this._savedCssText = this.sourceElement.style.cssText;
+            this._originalBorderRadius = getComputedStyle(this.sourceElement).borderRadius;
+            // Запоминаем всех прямых потомков исходного элемента (плитки)
+            this._originalChildren = Array.from(this.sourceElement.children);
+        }
+
+        this._build();
+        this._show();
+    }
+
+    _build() {
+        // Оверлей
+        if (!this.options.overlayStyle || this.options.overlayStyle.background !== 'transparent') {
+            this.overlay = document.createElement('div');
+            this.overlay.className = 'popup-overlay';
+            Object.assign(this.overlay.style, this.options.overlayStyle || { background: 'rgba(0,0,0,0.4)' });
+            this.overlay.style.opacity = '0';
+            document.body.appendChild(this.overlay);
+            if (this.closeOnOverlayClick) {
+                this.overlay.addEventListener('click', () => this.close());
+            }
+        }
+
+        // Плейсхолдер на месте исходного элемента
+        if (this.sourceElement) {
+            this._placeholder = document.createElement('div');
+            this._placeholder.style.width = this.sourceElement.offsetWidth + 'px';
+            this._placeholder.style.height = this.sourceElement.offsetHeight + 'px';
+            this._placeholder.style.flexShrink = '0';
+            this._placeholder.style.visibility = 'hidden';
+            this.sourceElement.parentNode.insertBefore(this._placeholder, this.sourceElement);
+        }
+
+        // Контейнер — сам исходный элемент, перемещённый в body
+        this.container = this.sourceElement;
+        if (this.container) {
+            document.body.appendChild(this.container);
+            this.container.style.position = 'fixed';
+            this.container.style.margin = '0';
+            this.container.style.zIndex = PopupManager.nextZIndex + 1;
+            this.container.style.transition = 'none';
+            this.container.style.overflow = 'hidden';
+        }
+
+        if (this.draggable) this._setupDrag();
+
+        if (this.closeOnSourceRemove && this.sourceElement) {
+            this._mutationObserver = new MutationObserver(() => {
+                if (!document.contains(this.sourceElement)) this.close();
+            });
+            this._mutationObserver.observe(document.body, { childList: true, subtree: true });
+        }
+
+        PopupManager.register(this);
+    }
+
+    _show() {
+        const el = this.container;
+        if (!el) return;
+
+        this._opening = true;
+        const sourceRect = this._originalRect;
+
+        // 1. Фиксируем начальные размеры и позицию
+        el.style.position = 'fixed';
+        el.style.left = sourceRect.left + 'px';
+        el.style.top = sourceRect.top + 'px';
+        el.style.width = sourceRect.width + 'px';
+        el.style.height = sourceRect.height + 'px';
+        el.style.borderRadius = this._originalBorderRadius;
+        el.style.transition = 'none';
+        el.style.overflow = 'hidden';
+
+        // 2. Оверлей
+        if (this.overlay) {
+            this.overlay.style.transition = 'opacity 0.3s ease';
+            this.overlay.style.opacity = '1';
+        }
+
+        // 3. Добавляем popupContent как абсолютный слой, растянутый на весь контейнер,
+        //    с внутренними отступами
+        this.popupContent.style.position = 'absolute';
+        this.popupContent.style.top = '0';
+        this.popupContent.style.left = '0';
+        this.popupContent.style.width = '100%';
+        this.popupContent.style.height = '100%';
+        this.popupContent.style.padding = '16px';
+        this.popupContent.style.boxSizing = 'border-box';
+        this.popupContent.style.transition = 'opacity 0.3s ease';
+        this.popupContent.style.opacity = '0';
+        this.popupContent.style.pointerEvents = 'auto';
+        el.appendChild(this.popupContent);
+
+        // Для всех оригинальных потомков плитки настраиваем плавное исчезновение
+        this._originalChildren.forEach(child => {
+            child.style.transition = 'opacity 0.3s ease';
+            child.style.opacity = '1';
+        });
+
+        // 4. Точное измерение естественных размеров контента (через клон, без перемещения)
+        const clone = this.popupContent.cloneNode(true);
+        clone.style.cssText = '';  // сбрасываем все инлайн-стили
+        clone.style.padding = '16px';
+        clone.style.boxSizing = 'border-box';
+
+        const measure = document.createElement('div');
+        measure.style.position = 'fixed';
+        measure.style.visibility = 'hidden';
+        measure.style.width = 'max-content';
+        measure.style.maxWidth = this.maxWidth;
+        measure.style.height = 'auto';
+        measure.appendChild(clone);
+        document.body.appendChild(measure);
+
+        const naturalWidth = measure.offsetWidth;
+        const naturalHeight = measure.scrollHeight;
+        document.body.removeChild(measure);
+
+        let targetWidth = naturalWidth;
+        let targetHeight = naturalHeight;
+        let needsOverflow = false;
+        const maxH = typeof this.maxHeight === 'number' ? this.maxHeight : window.innerHeight * 0.9;
+        const maxW = typeof this.maxWidth === 'number' ? this.maxWidth : window.innerWidth * 0.9;
+
+        // Минимальные размеры подложки
+        if (targetWidth < 160) targetWidth = 160;
+        if (targetHeight < 80) targetHeight = 80;
+
+        if (targetHeight > maxH) { targetHeight = maxH; needsOverflow = true; }
+        if (targetWidth > maxW) { targetWidth = maxW; needsOverflow = true; }
+
+        // 5. Расчёт целевой позиции (по умолчанию центр)
+        let targetLeft, targetTop;
+        const position = this.options.position || 'center';
+        const gap = 8;
+        if (position === 'source') {
+            targetLeft = sourceRect.left; targetTop = sourceRect.top;
+            targetWidth = sourceRect.width; targetHeight = sourceRect.height;
+        } else if (position === 'auto') {
+            targetLeft = sourceRect.right - targetWidth + gap;
+            targetTop = sourceRect.top - gap;
+            targetLeft = Math.min(Math.max(gap, targetLeft), window.innerWidth - targetWidth - gap);
+            targetTop = Math.min(Math.max(gap, targetTop), window.innerHeight - targetHeight - gap);
+        } else if (typeof position === 'object') {
+            targetLeft = position.left; targetTop = position.top;
+            targetWidth = position.width || targetWidth; targetHeight = position.height || targetHeight;
+        } else {
+            targetLeft = (window.innerWidth - targetWidth) / 2;
+            targetTop = (window.innerHeight - targetHeight) / 2;
+        }
+
+        this._targetRect = {
+            left: targetLeft, top: targetTop,
+            width: targetWidth, height: targetHeight,
+            borderRadius: '28px', overflow: needsOverflow
+        };
+
+        // 6. Запускаем анимацию формы
+        const morphDone = new Promise(resolve => {
+            animateMorph(el,
+                {
+                    left: sourceRect.left, top: sourceRect.top,
+                    width: sourceRect.width, height: sourceRect.height,
+                    borderRadius: this._originalBorderRadius
+                },
+                {
+                    left: targetLeft, top: targetTop,
+                    width: targetWidth, height: targetHeight,
+                    borderRadius: '28px'
+                },
+                {
+                    ...this._morphOptions,
+                    onComplete: () => {
+                        el.style.width = targetWidth + 'px';
+                        el.style.height = targetHeight + 'px';
+                        el.style.maxWidth = 'none';
+                        el.style.maxHeight = 'none';
+                        el.style.overflow = needsOverflow ? 'auto' : 'hidden';
+                        resolve();
+                    }
+                }
+            );
+        });
+
+        // 7. Кроссфейд: оригинал исчезает, popupContent появляется
+        requestAnimationFrame(() => {
+            this._originalChildren.forEach(child => { child.style.opacity = '0'; });
+            this.popupContent.style.opacity = '1';
+        });
+
+        // 8. После завершения анимации
+        const CROSSFADE_DURATION = 350;
+        Promise.all([
+            morphDone,
+            new Promise(resolve => setTimeout(resolve, CROSSFADE_DURATION))
+        ]).then(() => {
+            if (!this._closed && this._opening) {
+                this._opening = false;
+                el.style.transition = '';
+            }
+        }).catch(() => {});
+    }
+
+    close() {
+        if (this._closed) return;
+        this._closed = true;
+        if (this._mutationObserver) this._mutationObserver.disconnect();
+
+        const el = this.container;
+        if (!el) return;
+
+        // Если открытие было прервано – мгновенно фиксируем состояние попапа
+        if (this._opening) {
+            this._opening = false;
+            el.style.transition = 'none';
+            if (this._targetRect) {
+                el.style.left = this._targetRect.left + 'px';
+                el.style.top = this._targetRect.top + 'px';
+                el.style.width = this._targetRect.width + 'px';
+                el.style.height = this._targetRect.height + 'px';
+                el.style.borderRadius = this._targetRect.borderRadius;
+                el.style.overflow = this._targetRect.overflow ? 'auto' : 'hidden';
+            }
+            this._originalChildren.forEach(child => { child.style.opacity = '0'; });
+            this.popupContent.style.opacity = '1';
+        }
+
+        // Оверлей
+        if (this.overlay) {
+            this.overlay.style.pointerEvents = 'none';
+            this.overlay.style.transition = 'opacity 0.3s ease';
+            this.overlay.style.opacity = '0';
+        }
+
+        const sourceRect = this._originalRect;
+
+        // Текущие размеры контейнера
+        const currentRect = {
+            left: el.getBoundingClientRect().left,
+            top: el.getBoundingClientRect().top,
+            width: el.offsetWidth,
+            height: el.offsetHeight,
+            borderRadius: '28px'
+        };
+
+        // Запускаем обратную анимацию формы
+        const morphCloseDone = new Promise(resolve => {
+            animateMorph(el, currentRect,
+                {
+                    left: sourceRect.left, top: sourceRect.top,
+                    width: sourceRect.width, height: sourceRect.height,
+                    borderRadius: this._originalBorderRadius
+                },
+                {
+                    ...this._morphOptions,
+                    onComplete: resolve
+                }
+            );
+        });
+
+        // Обратный кроссфейд: оригинал появляется, popupContent исчезает
+        requestAnimationFrame(() => {
+            this._originalChildren.forEach(child => { child.style.opacity = '1'; });
+            this.popupContent.style.opacity = '0';
+        });
+
+        // После завершения обеих анимаций – окончательная очистка
+        const CROSSFADE_DURATION = 350;
+        Promise.all([
+            morphCloseDone,
+            new Promise(resolve => setTimeout(resolve, CROSSFADE_DURATION))
+        ]).then(() => {
+            this.destroy();
+        }).catch(() => {
+            this.destroy();
+        });
+    }
+
+    destroy() {
+        const el = this.container;
+        if (!el) return;
+
+        // Отключаем все переходы
+        if (el) el.style.transition = 'none';
+        this._originalChildren.forEach(child => { child.style.transition = ''; child.style.opacity = ''; });
+        if (this.popupContent) {
+            this.popupContent.style.transition = '';
+            this.popupContent.style.opacity = '';
+            if (this.popupContent.parentNode) this.popupContent.remove();
+        }
+
+        // Убираем оверлей
+        if (this.overlay && this.overlay.parentNode) {
+            this.overlay.style.transition = '';
+            this.overlay.remove();
+        }
+
+        // Восстанавливаем исходный вид плитки (только инлайн-стили, HTML не меняем)
+        if (el) {
+            el.style.cssText = this._savedCssText; // все исходные инлайн‑стили
+
+            // Возвращаем в DOM на прежнее место
+            if (this._placeholder && this._placeholder.parentNode) {
+                this._placeholder.parentNode.insertBefore(el, this._placeholder);
+                this._placeholder.remove();
+                this._placeholder = null;
+            } else if (this._originalParent && this._originalParent !== document.body) {
+                if (this._originalNextSibling && this._originalParent.contains(this._originalNextSibling)) {
+                    this._originalParent.insertBefore(el, this._originalNextSibling);
+                } else {
+                    this._originalParent.appendChild(el);
+                }
+            } else {
+                if (el.parentNode) el.remove();
+            }
+        }
+
+        PopupManager.unregister(this);
+        this._onClose();
+    }
+
+    _setupDrag() {
+        if (!this.container) return;
+        this.container.draggable = true;
+        let startX, startY, origLeft, origTop;
+        this.container.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('text/plain', this.id.toString());
+            startX = e.clientX;
+            startY = e.clientY;
+            const rect = this.container.getBoundingClientRect();
+            origLeft = rect.left;
+            origTop = rect.top;
+            this._showDragHint();
+        });
+        this.container.addEventListener('drag', (e) => {
+            if (this.dropZone) {
+                const dropRect = this.dropZone.getBoundingClientRect();
+                const cx = e.clientX, cy = e.clientY;
+                if (cx > dropRect.left && cx < dropRect.right && cy > dropRect.top && cy < dropRect.bottom) {
+                    this.dropZone.classList.add('ready');
+                } else {
+                    this.dropZone.classList.remove('ready');
+                }
+            }
+        });
+        this.container.addEventListener('dragend', (e) => {
+            this._hideDragHint();
+            if (this.dropZone && this.dropZone.classList.contains('ready')) {
+                this._animateIntoDropZone();
+            }
+            this.container.style.transition = 'none';
+        });
+    }
+
+    _showDragHint() {
+        if (!this.dragHint) {
+            this.dragHint = document.createElement('div');
+            this.dragHint.className = 'popup-drag-hint';
+            this.dragHint.textContent = 'Удалить';
+            document.body.appendChild(this.dragHint);
+        }
+        if (!this.dropZone) {
+            this.dropZone = document.createElement('div');
+            this.dropZone.className = 'popup-drop-zone';
+            document.body.appendChild(this.dropZone);
+        }
+        requestAnimationFrame(() => this.dragHint.classList.add('active'));
+    }
+
+    _hideDragHint() {
+        if (this.dragHint) this.dragHint.classList.remove('active');
+        if (this.dropZone) this.dropZone.classList.remove('ready');
+    }
+
+    _animateIntoDropZone() {
+        const dropRect = this.dropZone.getBoundingClientRect();
+        const containerRect = this.container.getBoundingClientRect();
+        const targetLeft = dropRect.left + dropRect.width / 2 - containerRect.width / 2;
+        const targetTop = dropRect.top;
+        const targetWidth = containerRect.width;
+        const targetHeight = 0;
+        animateMorph(this.container,
+            { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: containerRect.height, borderRadius: '28px' },
+            { left: targetLeft, top: targetTop, width: targetWidth, height: targetHeight, borderRadius: '28px' },
+            { duration: 0.3, onComplete: () => this.close() }
+        );
+    }
+}
+
+    window.ProgressAPI = (function() {
+      const container = document.getElementById('progress-chips-container');
+      if (!container) { console.error('progress-chips-container не найден'); return null; }
+      const tasks = new Map();
+      const appChips = new Map();
+
+
+      function createAppChip(appId, appIcon, appName) {
+        const chip = document.createElement('div');
+        chip.className = 'progress-app-chip';
+        chip.title = appName;
+        chip.innerHTML = `
+          <div class="progress-app-icon">
+            <span class="material-icons">${appIcon || 'apps'}</span>
+          </div>
+          <div class="progress-app-items"></div>
+        `;
+        chip.onclick = () => { if (typeof focusOrCreate === 'function') focusOrCreate(appId); };
+        const itemsContainer = chip.querySelector('.progress-app-items');
+        container.appendChild(chip);
+        return { chip, itemsContainer };
+      }
+
+
+      return {
+        create(id, options = {}) {
+          if (tasks.has(id)) return;
+          const appId = options.appId || 'system';
+          const appIcon = options.appIcon || 'apps';
+          const appName = options.appName || 'Приложение';
+
+
+          const taskEl = document.createElement('div');
+          taskEl.className = 'progress-task-item';
+          taskEl.innerHTML = `
+            <span class="material-icons">${options.icon || 'download'}</span>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" style="width:${options.initialProgress || 0}%"></div>
+            </div>
+            <span class="task-label">${options.label || ''}</span>
+          `;
+          const fill = taskEl.querySelector('.progress-bar-fill');
+
+
+          let appChip = appChips.get(appId);
+          if (!appChip) {
+            const { chip, itemsContainer } = createAppChip(appId, appIcon, appName);
+            appChip = { element: chip, itemsContainer, tasks: new Set() };
+            appChips.set(appId, appChip);
+          }
+          appChip.itemsContainer.appendChild(taskEl);
+          appChip.tasks.add(id);
+          tasks.set(id, { element: taskEl, fill, appId });
+          requestAnimationFrame(() => taskEl.style.opacity = '1');
+        },
+
+
+        update(id, progress) {
+          const task = tasks.get(id);
+          if (task) task.fill.style.width = Math.min(100, Math.max(0, progress)) + '%';
+        },
+
+
+        remove(id) {
+          const task = tasks.get(id);
+          if (!task) return;
+          const appChip = appChips.get(task.appId);
+          if (!appChip) return;
+          task.element.style.transition = 'opacity 0.2s, max-width 0.2s, padding 0.2s, margin 0.2s';
+          task.element.style.opacity = '0';
+          task.element.style.maxWidth = '0';
+          task.element.style.padding = '0';
+          task.element.style.margin = '0';
+          setTimeout(() => {
+            task.element.remove();
+            appChip.tasks.delete(id);
+            tasks.delete(id);
+            if (appChip.tasks.size === 0) {
+              appChip.element.style.transition = 'opacity 0.2s, max-width 0.2s';
+              appChip.element.style.opacity = '0';
+              appChip.element.style.maxWidth = '0';
+              setTimeout(() => {
+                appChip.element.remove();
+                appChips.delete(task.appId);
+              }, 200);
+            }
+          }, 200);
+        },
+
+
+        exists(id) { return tasks.has(id); }
+      };
+    })();
+
+
+    if (state.theme === 'dark') body.classList.add('dark-theme');
+
+
+   function applyAccentColor(hexColor) {
+  const color = hexColor.startsWith('#') ? hexColor : `#${hexColor}`;
+  state.accentColor = color;
+  localStorage.setItem('accent', color);
+
+  // 1. Конвертируем HEX → HSL
+  function hexToHsl(hex) {
+    hex = hex.replace('#', '');
+    const r = parseInt(hex.substring(0,2), 16) / 255;
+    const g = parseInt(hex.substring(2,4), 16) / 255;
+    const b = parseInt(hex.substring(4,6), 16) / 255;
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    let h = 0, s = 0, l = (max+min)/2;
+    if (max !== min) {
+      const d = max-min;
+      s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+      switch(max) {
+        case r: h = ((g-b)/d + (g<b?6:0)) / 6; break;
+        case g: h = ((b-r)/d + 2) / 6; break;
+        case b: h = ((r-g)/d + 4) / 6; break;
+      }
+    }
+    return { h: h*360, s: s*100, l: l*100 };
+  }
+
+  // 2. HSL → HEX
+  function hslToHex(h, s, l) {
+    s /= 100; l /= 100;
+    const a = s * Math.min(l, 1-l);
+    const f = n => {
+      const k = (n + h/30) % 12;
+      return l - a * Math.max(-1, Math.min(k-3, 9-k, 1));
+    };
+    return `#${[0,8,4].map(n => Math.round(f(n)*255).toString(16).padStart(2,'0')).join('')}`;
+  }
+
+  // 3. Создаём тональную палитру (подражание MD3)
+  //    saturationFactor: множитель для насыщенности (1 = исходная)
+  //    toneMap: объект, где ключ – тон (0–100), значение – насыщенность (0–100) или null (авто)
+  function generatePalette(hue, baseSaturation, saturationCurve = null) {
+  const palette = {};
+  const tones = [0,4,6,10,12,14,17,20,22,26,30,40,50,60,70,80,90,95,99,100];
+  tones.forEach(tone => {
+    let s;
+    if (saturationCurve && saturationCurve[tone] !== undefined) {
+      s = saturationCurve[tone];
+    } else {
+      // Улучшенная кривая: пик насыщенности в районе 55%, плавный спад к краям
+      const t = tone / 100;
+      const saturationFactor = 1 - 1.8 * Math.pow(t - 0.55, 2);
+      s = baseSaturation * saturationFactor;
+      s = Math.max(0, Math.min(100, s));
+    }
+    palette[tone] = hslToHex(hue, s, tone);
+  });
+  return palette;
+}
+
+
+  // 4. Получаем HSL исходного цвета
+  const hsl = hexToHsl(color);
+  const primaryHue = hsl.h;
+  const primaryChroma = Math.max(hsl.s, 60); // насыщенность минимум 48
+
+  // 5. Генерируем палитры с кривыми насыщенности, приближенными к Material Theme Builder
+  // Кривая насыщенности для primary – соответствует эталонному MD3
+const primaryCurve = {
+    0:   0,
+    4:   4,
+    6:   8,
+    10: 14,
+    12: 20,
+    14: 26,
+    17: 34,
+    20: 42,
+    22: 48,
+    26: 56,
+    30: 62,   // тёмная тема – остаётся без изменений
+    40: 70,
+    50: 74,
+    60: 72,
+    70: 66,
+    80: 56,
+    60: 76,   // светлая тема – увеличено с 48 до 64
+    75: 46,   //                  с 32 до 46
+    99: 18,
+    100: 0
+};
+
+const palettes = {
+    primary: generatePalette(primaryHue, primaryChroma, primaryCurve),
+    secondary: generatePalette((primaryHue + 30) % 360, 16),
+    tertiary: generatePalette((primaryHue + 60) % 360, 24),
+    error: generatePalette(4, 48),
+    neutral: generatePalette(primaryHue, 0),
+    neutralVariant: generatePalette(primaryHue, 8)
+};
+
+  // 6. Роли Material Design 3 (светлая тема)
+  const lightRoles = {
+    primary: 40, onPrimary: 100,
+    primaryContainer: 90, onPrimaryContainer: 10,
+    secondary: 40, onSecondary: 100,
+    secondaryContainer: 90, onSecondaryContainer: 10,
+    tertiary: 40, onTertiary: 100,
+    tertiaryContainer: 90, onTertiaryContainer: 10,
+    error: 40, onError: 100,
+    errorContainer: 90, onErrorContainer: 10,
+    background: 99, onBackground: 10,
+    surface: 99, onSurface: 10,
+    surfaceVariant: 90, onSurfaceVariant: 30,
+    outline: 50, outlineVariant: 80,
+    surfaceTint: 40,
+    surfaceContainerLowest: 100,
+    surfaceContainerLow: 96,
+    surfaceContainer: 94,
+    surfaceContainerHigh: 92,
+    surfaceContainerHighest: 90,
+    inverseSurface: 20, inverseOnSurface: 95,
+    inversePrimary: 80,
+  };
+
+  const darkRoles = {
+    primary: 80, onPrimary: 20,
+    primaryContainer: 30, onPrimaryContainer: 90,
+    secondary: 80, onSecondary: 20,
+    secondaryContainer: 30, onSecondaryContainer: 90,
+    tertiary: 80, onTertiary: 20,
+    tertiaryContainer: 30, onTertiaryContainer: 90,
+    error: 80, onError: 20,
+    errorContainer: 30, onErrorContainer: 90,
+    background: 10, onBackground: 90,
+    surface: 10, onSurface: 90,
+    surfaceVariant: 30, onSurfaceVariant: 80,
+    outline: 60, outlineVariant: 30,
+    surfaceTint: 80,
+    surfaceContainerLowest: 4,
+    surfaceContainerLow: 10,
+    surfaceContainer: 14,
+    surfaceContainerHigh: 20,
+    surfaceContainerHighest: 26,
+    inverseSurface: 90, inverseOnSurface: 20,
+    inversePrimary: 40,
+  };
+
+  // 7. Применяем роли к элементу
+  function applyRoles(roles, target) {
+    const set = (name, palette, tone) => {
+      const value = palette[tone];
+      if (value) target.style.setProperty(`--md-sys-color-${name}`, value);
+    };
+    const p = palettes;
+    set('primary', p.primary, roles.primary);
+    set('on-primary', p.primary, roles.onPrimary);
+    set('primary-container', p.primary, roles.primaryContainer);
+    set('on-primary-container', p.primary, roles.onPrimaryContainer);
+
+    set('secondary', p.secondary, roles.secondary);
+    set('on-secondary', p.secondary, roles.onSecondary);
+    set('secondary-container', p.secondary, roles.secondaryContainer);
+    set('on-secondary-container', p.secondary, roles.onSecondaryContainer);
+
+    set('tertiary', p.tertiary, roles.tertiary);
+    set('on-tertiary', p.tertiary, roles.onTertiary);
+    set('tertiary-container', p.tertiary, roles.tertiaryContainer);
+    set('on-tertiary-container', p.tertiary, roles.onTertiaryContainer);
+
+    set('error', p.error, roles.error);
+    set('on-error', p.error, roles.onError);
+    set('error-container', p.error, roles.errorContainer);
+    set('on-error-container', p.error, roles.onErrorContainer);
+
+    set('background', p.neutral, roles.background);
+    set('on-background', p.neutral, roles.onBackground);
+    set('surface', p.neutral, roles.surface);
+    set('on-surface', p.neutral, roles.onSurface);
+
+    set('surface-container-lowest', p.neutral, roles.surfaceContainerLowest);
+    set('surface-container-low', p.neutral, roles.surfaceContainerLow);
+    set('surface-container', p.neutral, roles.surfaceContainer);
+    set('surface-container-high', p.neutral, roles.surfaceContainerHigh);
+    set('surface-container-highest', p.neutral, roles.surfaceContainerHighest);
+
+    set('surface-variant', p.neutralVariant, roles.surfaceVariant);
+    set('on-surface-variant', p.neutralVariant, roles.onSurfaceVariant);
+
+    set('outline', p.neutralVariant, roles.outline);
+    set('outline-variant', p.neutralVariant, roles.outlineVariant);
+
+    set('inverse-surface', p.neutral, roles.inverseSurface);
+    set('inverse-on-surface', p.neutral, roles.inverseOnSurface);
+    set('inverse-primary', p.primary, roles.inversePrimary);
+
+    set('surface-tint', p.primary, roles.surfaceTint);
+
+    target.style.setProperty('--md-sys-color-shadow', '#000000');
+    target.style.setProperty('--md-sys-color-scrim', '#000000');
+  }
+
+  const root = document.documentElement;
+  // Светлая тема – на :root
+  applyRoles(lightRoles, root);
+
+  const isDark = document.body.classList.contains('dark-theme');
+  if (isDark) {
+    // Очищаем инлайн-стили body
+    const bodyStyle = document.body.style;
+    for (let i = bodyStyle.length - 1; i >= 0; i--) {
+      if (bodyStyle[i].startsWith('--md-sys-color')) bodyStyle.removeProperty(bodyStyle[i]);
+    }
+    // Тёмная тема – на body, перекрывая :root
+    applyRoles(darkRoles, document.body);
+  } else {
+    const bodyStyle = document.body.style;
+    for (let i = bodyStyle.length - 1; i >= 0; i--) {
+      if (bodyStyle[i].startsWith('--md-sys-color')) bodyStyle.removeProperty(bodyStyle[i]);
+    }
+  }
+}
+
+
+    applyAccentColor(state.accentColor);
+    //applyWallpaper();
+
+
+    function applyWallpaper() {
+  const isDark = body.classList.contains('dark-theme');
+  const baseWall = state.wallpaper;
+
+  // Если установлены живые обои
+  if (baseWall && baseWall.startsWith('live:')) {
+    const providerId = baseWall.split(':')[1];
+    const provider = window.liveWallpaperProviders.get(providerId);
+    if (provider) {
+      if (typeof provider.getBackground === 'function') {
+        const bg = provider.getBackground();
+        if (bg) desktop.style.background = bg;
+      }
+      if (typeof provider.getColor === 'function') {
+        const color = provider.getColor();
+        if (color) applyAccentColor(color);
+      }
+      return;
+    }
+  }
+
+  // Обычные обои
+  let wallpaper = baseWall;
+  if (baseWall === 'grad1') wallpaper = isDark ? 'linear-gradient(145deg, #2b2533 0%, #1f1a24 100%)' : 'linear-gradient(145deg, #f5ebff 0%, #eaddff 100%)';
+  else if (baseWall === 'grad2') wallpaper = isDark ? 'linear-gradient(135deg, #1a2a3a, #0f1a24)' : 'linear-gradient(135deg, #a8d8ea, #e0f2fe)';
+  desktop.style.background = wallpaper;
+}
+
+
+    class FileSystem {
+      constructor() { this.data = JSON.parse(localStorage.getItem('fs')) || { '/data': { 'apps': {} } }; }
+      save() { localStorage.setItem('fs', JSON.stringify(this.data)); }
+      getApps() { return this.data['/data']['apps'] || {}; }
+      addApp(id, code) { this.data['/data']['apps'][id] = code; this.save(); }
+      removeApp(id) { delete this.data['/data']['apps'][id]; this.save(); }
+    }
+    const fs = new FileSystem();
+    function loadInstalledApps() { for (let appId in fs.getApps()) try { const m={}; new Function('exports', fs.getApps()[appId])(m); if(m.id) state.installedApps.set(appId, m);
+if (m.tiles && m.tiles.length) {
+  window.registerAppTiles(m.id, m.tiles);
+} } catch(e) {} }
+
+
+    const preinstalledApps = [
+      { id: 'downloads', name: 'Загрузки', icon: 'download', createWindow: (intent) => {
+          const container = document.createElement('div');
+          container.style.cssText = 'display:flex; flex-direction:column; height:100%; padding:16px;';
+          const addPanel = document.createElement('div');
+          addPanel.style.cssText = 'display:flex; gap:8px; margin-bottom:16px;';
+          addPanel.innerHTML = `
+            <input id="download-url-input" type="text" placeholder="Введите URL" style="flex:1; padding:12px 16px; border-radius:28px; border:1px solid var(--md-sys-color-outline); background:var(--md-sys-color-surface-container); color:var(--md-sys-color-on-surface);">
+            <button id="download-add-btn" class="taskbar-btn" style="padding:12px 24px; border-radius:28px; background:var(--md-sys-color-primary); color:var(--md-sys-color-on-primary);">Добавить</button>
+          `;
+          container.appendChild(addPanel);
+          const listContainer = document.createElement('div');
+          listContainer.id = 'downloads-list';
+          listContainer.style.cssText = 'flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:12px;';
+          container.appendChild(listContainer);
+          let downloads = [];
+          const STORAGE_KEY = 'downloads_list';
+          try { const saved = localStorage.getItem(STORAGE_KEY); if (saved) downloads = JSON.parse(saved); } catch(e) {}
+          const saveDownloads = () => { localStorage.setItem(STORAGE_KEY, JSON.stringify(downloads)); };
+          const generateId = () => 'dl_' + Date.now() + '_' + Math.random().toString(36);
+          const renderList = () => {
+            listContainer.innerHTML = '';
+            downloads.sort((a,b) => b.created - a.created);
+            downloads.forEach(dl => {
+              const item = document.createElement('div');
+              item.className = 'settings-item';
+              item.style.cssText = 'padding:12px; border-radius:20px; background:var(--md-sys-color-surface-container); margin-bottom:0;';
+              const progressBar = document.createElement('div');
+              progressBar.className = 'progress-bar-bg';
+              progressBar.style.cssText = 'width:100%; height:8px; margin:8px 0;';
+              const fill = document.createElement('div');
+              fill.className = 'progress-bar-fill';
+              fill.style.width = dl.progress + '%';
+              progressBar.appendChild(fill);
+              const statusSpan = document.createElement('span');
+              statusSpan.style.cssText = 'font-size:14px; color:var(--md-sys-color-on-surface-variant);';
+              const updateStatus = () => {
+                if (dl.status === 'downloading') statusSpan.textContent = `Загрузка ${dl.progress}%`;
+                else if (dl.status === 'paused') statusSpan.textContent = 'Пауза';
+                else if (dl.status === 'completed') statusSpan.textContent = 'Завершено';
+                else if (dl.status === 'error') statusSpan.textContent = 'Ошибка';
+                else statusSpan.textContent = 'Ожидание';
+              };
+              updateStatus();
+              const controls = document.createElement('div');
+              controls.style.cssText = 'display:flex; gap:8px;';
+              const pauseBtn = document.createElement('button');
+              pauseBtn.className = 'material-icons';
+              pauseBtn.style.cssText = 'background:none; border:none; color:var(--md-sys-color-primary); cursor:pointer;';
+              pauseBtn.textContent = dl.status === 'downloading' ? 'pause' : 'play_arrow';
+              const cancelBtn = document.createElement('button');
+              cancelBtn.className = 'material-icons';
+              cancelBtn.style.cssText = 'background:none; border:none; color:var(--md-sys-color-error); cursor:pointer;';
+              cancelBtn.textContent = 'close';
+              controls.append(pauseBtn, cancelBtn);
+              item.innerHTML = `
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span class="material-icons">${dl.icon || 'insert_drive_file'}</span>
+                  <div style="flex:1;">
+                    <div style="font-weight:500;">${dl.filename || 'Файл'}</div>
+                    <div style="font-size:12px; opacity:0.7;">${dl.url}</div>
+                  </div>
+                </div>
+              `;
+              const infoDiv = item.querySelector('div[style*="flex:1"]');
+              infoDiv.appendChild(progressBar);
+              infoDiv.appendChild(statusSpan);
+              item.appendChild(controls);
+              pauseBtn.onclick = () => {
+                if (dl.status === 'downloading') {
+                  dl.status = 'paused';
+                  if (dl.progressId && ProgressAPI) ProgressAPI.remove(dl.progressId);
+                  dl.progressId = null;
+                } else if (dl.status === 'paused') {
+                  dl.status = 'downloading';
+                  simulateDownload(dl);
+                }
+                saveDownloads();
+                renderList();
+              };
+              cancelBtn.onclick = () => {
+                if (dl.progressId && ProgressAPI) ProgressAPI.remove(dl.progressId);
+                downloads = downloads.filter(d => d.id !== dl.id);
+                saveDownloads();
+                renderList();
+              };
+              listContainer.appendChild(item);
+            });
+          };
+          const simulateDownload = (dl) => {
+            if (dl.status === 'completed') return;
+            dl.status = 'downloading';
+            dl.progress = dl.progress || 0;
+            if (window.ProgressAPI && !dl.progressId) {
+              window.ProgressAPI.create(dl.id, {
+                appId: 'downloads',
+                appIcon: 'download',
+                appName: 'Загрузки',
+                icon: 'download',
+                label: dl.filename || 'Файл',
+                initialProgress: dl.progress
+              });
+              dl.progressId = dl.id;
+            }
+            const interval = setInterval(() => {
+              if (dl.status !== 'downloading') { clearInterval(interval); return; }
+              dl.progress += Math.random() * 10 + 5;
+              if (dl.progress >= 100) {
+                dl.progress = 100;
+                dl.status = 'completed';
+                clearInterval(interval);
+                if (dl.progressId && ProgressAPI) ProgressAPI.remove(dl.progressId);
+              }
+              if (dl.progressId && ProgressAPI) ProgressAPI.update(dl.progressId, dl.progress);
+              saveDownloads();
+              renderList();
+            }, 300);
+            dl.interval = interval;
+          };
+          const addDownload = (url) => {
+            if (!url) return;
+            const filename = url.split('/').pop() || 'file';
+            const id = generateId();
+            const newDl = { id, url, filename, icon: 'description', created: Date.now(), progress: 0, status: 'pending' };
+            downloads.push(newDl);
+            saveDownloads();
+            renderList();
+            simulateDownload(newDl);
+          };
+          if (intent && intent.action === 'download' && intent.url) { addDownload(intent.url); }
+          const urlInput = container.querySelector('#download-url-input');
+          const addBtn = container.querySelector('#download-add-btn');
+          addBtn.onclick = () => { addDownload(urlInput.value.trim()); urlInput.value = ''; };
+          urlInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') { addDownload(urlInput.value.trim()); urlInput.value = ''; } });
+          renderList();
+          container.cleanup = () => { downloads.forEach(dl => { if (dl.interval) clearInterval(dl.interval); }); };
+          return container;
+        }
+      },
+      { id: 'accent', name: 'Цвета', icon: 'palette', createWindow: () => {
+          const c = document.createElement('div');
+          c.style.cssText = 'display:flex;flex-direction:column;height:100%;padding:20px;gap:16px;background:var(--md-sys-color-surface);color:var(--md-sys-color-on-surface);';
+          const current = state.accentColor || '#6750A4';
+          c.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+              <div>
+                <div style="font-size:12px;opacity:0.7;margin-bottom:4px;">Pixel-style palette</div>
+                <h2 style="margin:0;font-size:28px;">Цвета</h2>
+              </div>
+              <button id="accent-reset-btn" class="taskbar-btn" style="white-space:nowrap;">Сбросить</button>
+            </div>
+            <div style="background:var(--md-sys-color-surface-container-high);border-radius:28px;padding:18px;box-shadow:var(--elevation-1);">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                <div>
+                  <div style="font-size:14px;opacity:0.75;margin-bottom:6px;">Текущий акцент</div>
+                  <div id="accent-current-hex" style="font-size:24px;font-weight:700;font-family:monospace;">${current}</div>
+                </div>
+                <div id="accent-preview" style="width:88px;height:88px;border-radius:28px;background:${current};box-shadow:var(--elevation-2);border:2px solid var(--md-sys-color-outline-variant);"></div>
+              </div>
+            </div>
+            <div>
+              <div style="font-size:14px;opacity:0.75;margin:0 0 10px 4px;">Быстрые цвета</div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;" id="accent-swatches">
+                <button class="accent-swatch" data-color="#6750A4" style="aspect-ratio:1;border:none;border-radius:24px;background:#6750A4;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#675ACD" style="aspect-ratio:1;border:none;border-radius:24px;background:#675ACD;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#0F9D58" style="aspect-ratio:1;border:none;border-radius:24px;background:#0F9D58;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#D93025" style="aspect-ratio:1;border:none;border-radius:24px;background:#D93025;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#FF6D00" style="aspect-ratio:1;border:none;border-radius:24px;background:#FF6D00;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#00ACC1" style="aspect-ratio:1;border:none;border-radius:24px;background:#00ACC1;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#7CB342" style="aspect-ratio:1;border:none;border-radius:24px;background:#7CB342;box-shadow:var(--elevation-1);"></button>
+                <button class="accent-swatch" data-color="#EC407A" style="aspect-ratio:1;border:none;border-radius:24px;background:#EC407A;box-shadow:var(--elevation-1);"></button>
+              </div>
+            </div>
+            <div style="background:var(--md-sys-color-surface-container);border-radius:28px;padding:18px;display:flex;align-items:center;justify-content:space-between;gap:14px;">
+              <div>
+                <div style="font-weight:600;margin-bottom:4px;">Свой цвет</div>
+                <div style="font-size:13px;opacity:0.7;">Выбери любой оттенок как на Pixel</div>
+              </div>
+              <label style="display:inline-flex;align-items:center;justify-content:center;width:56px;height:56px;border-radius:18px;background:var(--md-sys-color-primary-container);cursor:pointer;position:relative;">
+                <input id="accent-picker" type="color" value="${current}" style="width:100%;height:100%;border:none;background:transparent;padding:0;opacity:0;cursor:pointer;">
+                <span class="material-icons" style="position:absolute;pointer-events:none;color:var(--md-sys-color-on-primary-container);">palette</span>
+              </label>
+            </div>
+            <div style="background:var(--md-sys-color-surface-container-high);border-radius:28px;padding:18px;display:flex;flex-direction:column;gap:12px;">
+              <div style="font-weight:600;">Предпросмотр</div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <div style="padding:10px 14px;border-radius:999px;background:var(--md-sys-color-primary);color:var(--md-sys-color-on-primary);font-weight:600;">Primary</div>
+                <div style="padding:10px 14px;border-radius:999px;background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container);font-weight:600;">Container</div>
+                <div style="padding:10px 14px;border-radius:999px;background:var(--md-sys-color-secondary-container);color:var(--md-sys-color-on-secondary-container);font-weight:600;">Secondary</div>
+              </div>
+            </div>
+          `;
+
+
+          const apply = (color) => {
+            applyAccentColor(color);
+            const hexEl = c.querySelector('#accent-current-hex');
+            const prevEl = c.querySelector('#accent-preview');
+            const pickerEl = c.querySelector('#accent-picker');
+            if (hexEl) hexEl.textContent = color.toUpperCase();
+            if (prevEl) prevEl.style.background = color;
+            if (pickerEl) pickerEl.value = color;
+          };
+
+
+          c.querySelectorAll('.accent-swatch').forEach(btn => {
+            btn.addEventListener('click', () => apply(btn.dataset.color));
+          });
+          c.querySelector('#accent-picker').addEventListener('input', e => apply(e.target.value));
+          c.querySelector('#accent-reset-btn').addEventListener('click', () => apply('#6750A4'));
+
+
+          return c;
+        }
+      },
+      { id: 'settings', name: 'Настройки', icon: 'settings', createWindow: () => {
+          const container = document.createElement('div');
+          container.style.cssText = 'display:flex; height:100%; background:var(--md-sys-color-surface);';
+          const sidebar = document.createElement('div');
+          sidebar.style.cssText = 'width:280px; border-right:1px solid var(--md-sys-color-outline-variant); padding:16px 0; overflow-y:auto;';
+          container.appendChild(sidebar);
+          const contentArea = document.createElement('div');
+          contentArea.style.cssText = 'flex:1; padding:24px; overflow-y:auto;';
+          container.appendChild(contentArea);
+          const categories = [
+            { id: 'network', label: 'Сеть и интернет', icon: 'wifi' },
+            { id: 'connected', label: 'Подключенные устройства', icon: 'devices' },
+            { id: 'apps', label: 'Приложения', icon: 'apps' },
+            { id: 'notifications', label: 'Уведомления', icon: 'notifications' },
+            { id: 'display', label: 'Экран', icon: 'brightness_6' },
+            { id: 'sound', label: 'Звук', icon: 'volume_up' },
+            { id: 'storage', label: 'Хранилище', icon: 'storage' },
+            { id: 'security', label: 'Безопасность', icon: 'security' },
+            { id: 'accounts', label: 'Аккаунты', icon: 'account_circle' },
+            { id: 'accessibility', label: 'Спец. возможности', icon: 'accessibility' },
+            { id: 'system', label: 'Система', icon: 'info' }
+          ];
+          const searchDiv = document.createElement('div');
+          searchDiv.style.cssText = 'padding:0 16px 16px;';
+          searchDiv.innerHTML = `
+            <div style="background:var(--md-sys-color-surface-container); border-radius:28px; padding:4px 16px; display:flex; align-items:center;">
+              <span class="material-icons">search</span>
+              <input id="settings-search" type="text" placeholder="Поиск настроек" style="border:none; background:transparent; padding:12px; width:100%; outline:none; color:var(--md-sys-color-on-surface);">
+            </div>
+          `;
+          sidebar.appendChild(searchDiv);
+          const renderCategories = (filter = '') => {
+            sidebar.querySelectorAll('.category-item').forEach(el => el.remove());
+            const filtered = categories.filter(cat => !filter || cat.label.toLowerCase().includes(filter));
+            filtered.forEach(cat => {
+              const item = document.createElement('div');
+              item.className = 'category-item';
+              item.style.cssText = 'padding:12px 24px; display:flex; align-items:center; gap:16px; cursor:pointer; transition:background 0.2s;';
+              item.innerHTML = `<span class="material-icons">${cat.icon}</span><span>${cat.label}</span>`;
+              item.onmouseenter = () => item.style.background = 'var(--md-sys-color-surface-container)';
+              item.onmouseleave = () => item.style.background = '';
+              item.onclick = () => renderCategoryContent(cat.id);
+              sidebar.appendChild(item);
+            });
+          };
+          const renderCategoryContent = (categoryId) => {
+            contentArea.innerHTML = '';
+            const h2 = document.createElement('h2');
+            h2.style.marginBottom = '24px';
+            const section = document.createElement('div');
+            section.className = 'settings-section';
+            const addToggleItem = (label, id, checked, onChange) => {
+              const div = document.createElement('div');
+              div.className = 'settings-item';
+              div.innerHTML = `<span>${label}</span>`;
+              const checkbox = document.createElement('input');
+              checkbox.type = 'checkbox';
+              checkbox.id = id;
+              checkbox.checked = checked;
+              if (onChange) checkbox.onchange = onChange;
+              div.appendChild(checkbox);
+              section.appendChild(div);
+            };
+            const addSliderItem = (label, id, value, min, max, onChange) => {
+              const div = document.createElement('div');
+              div.className = 'settings-item';
+              div.innerHTML = `<span>${label}</span>`;
+              const slider = document.createElement('input');
+              slider.type = 'range';
+              slider.id = id;
+              slider.min = min;
+              slider.max = max;
+              slider.value = value;
+              if (onChange) slider.oninput = onChange;
+              div.appendChild(slider);
+              section.appendChild(div);
+            };
+            const addButtonItem = (label, btnText, onClick) => {
+              const div = document.createElement('div');
+              div.className = 'settings-item';
+              div.innerHTML = `<span>${label}</span>`;
+              const btn = document.createElement('button');
+              btn.className = 'taskbar-btn';
+              btn.textContent = btnText;
+              btn.onclick = onClick;
+              div.appendChild(btn);
+              section.appendChild(div);
+            };
+            switch(categoryId) {
+              case 'network':
+                h2.textContent = 'Сеть и интернет';
+                addToggleItem('Wi-Fi', 'wifi-toggle', localStorage.getItem('wifi') !== 'false', e => localStorage.setItem('wifi', e.target.checked));
+                addToggleItem('Мобильные данные', 'mobile-data-toggle', true, null);
+                addToggleItem('Режим полёта', 'airplane-toggle', false, null);
+                addButtonItem('Точка доступа', 'Настроить', () => alert('Точка доступа'));
+                addButtonItem('VPN', 'Добавить', () => alert('Добавление VPN'));
+                break;
+              case 'display':
+                h2.textContent = 'Экран';
+                addSliderItem('Яркость', 'brightness-slider', localStorage.getItem('brightness') || 80, 0, 100, e => {
+                  const v = e.target.value;
+                  localStorage.setItem('brightness', v);
+                  const overlay = document.getElementById('brightness-overlay');
+                  if (overlay) overlay.style.opacity = (100 - v) / 100 * 0.6;
+                });
+                addToggleItem('Тёмная тема', 'theme-toggle', document.body.classList.contains('dark-theme'), e => {
+                  document.body.classList.toggle('dark-theme', e.target.checked);
+                  localStorage.setItem('android16-theme', e.target.checked ? 'dark' : 'light');
+                  applyWallpaper();
+applyAccentColor(state.accentColor);
+                });
+                addButtonItem('Обои', 'Сменить', () => {
+                  state.wallpaper = state.wallpaper === 'grad1' ? 'grad2' : 'grad1';
+                  localStorage.setItem('wallpaper', state.wallpaper);
+                  applyWallpaper();
+                });
+                addButtonItem('Акцентный цвет', 'Выбрать', () => {
+                  const input = document.createElement('input');
+                  input.type = 'color';
+                  input.value = state.accentColor;
+                  input.addEventListener('input', e => applyAccentColor(e.target.value));
+                  input.click();
+                });
+                break;
+              case 'notifications':
+                h2.textContent = 'Уведомления';
+                addToggleItem('Показывать уведомления', 'notif-enable', state.notificationsEnabled, e => { state.notificationsEnabled = e.target.checked; renderNotifications(); });
+                addToggleItem('Не беспокоить', 'dnd-toggle', false, null);
+                addButtonItem('Звук уведомлений', 'По умолчанию', () => {});
+                addButtonItem('Уведомления на экране блокировки', 'Показывать всё', () => {});
+                break;
+              case 'sound':
+                h2.textContent = 'Звук';
+                addSliderItem('Громкость медиа', 'media-volume', 70, 0, 100, null);
+                addSliderItem('Громкость звонка', 'ring-volume', 80, 0, 100, null);
+                addToggleItem('Вибрация при звонке', 'vibrate-toggle', true, null);
+                addButtonItem('Мелодия звонка', 'Выбрать', () => {});
+                break;
+              case 'storage':
+                h2.textContent = 'Хранилище';
+                section.innerHTML = `<div class="settings-item"><span>Использовано 12.4 ГБ из 64 ГБ</span></div><div class="progress-bar-bg" style="width:100%; margin:8px 0;"><div class="progress-bar-fill" style="width:19%;"></div></div>`;
+                addButtonItem('Очистить кэш', 'Очистить', () => alert('Кэш очищен'));
+                break;
+              case 'system':
+                h2.textContent = 'Система';
+                addButtonItem('Обновление системы', 'Проверить', () => alert('Система обновлена'));
+                addButtonItem('Дата и время', 'Настроить', () => {});
+                addButtonItem('Язык и ввод', 'Русский', () => {});
+                addButtonItem('Сброс настроек', 'Сбросить', () => { if (confirm('Сбросить все настройки?')) { localStorage.clear(); location.reload(); } });
+                addButtonItem('О телефоне', 'Подробнее', () => alert('Baklava OS 1.0'));
+                break;
+              default:
+                h2.textContent = categories.find(c => c.id === categoryId).label;
+                section.innerHTML = `<div class="settings-item">Настройки в разработке</div>`;
+            }
+            contentArea.appendChild(h2);
+            contentArea.appendChild(section);
+          };
+          const searchInput = sidebar.querySelector('#settings-search');
+          searchInput.addEventListener('input', e => renderCategories(e.target.value.toLowerCase()));
+          renderCategories();
+          renderCategoryContent('network');
+          return container;
+        }
+      },
+      { id: 'calculator', name: 'Калькулятор', icon: 'calculate', createWindow: () => {
+          const c = document.createElement('div'); c.style.cssText = 'display:flex;flex-direction:column;height:100%';
+          c.innerHTML = `<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;padding:16px;"><div id="calc-expr" style="font-size:18px;opacity:0.7;text-align:right;"></div><div id="calc-disp" style="font-size:52px;text-align:right;">0</div></div><div id="calc-btns" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:12px;"></div>`;
+          const disp = c.querySelector('#calc-disp'), exprDiv = c.querySelector('#calc-expr'), btns = c.querySelector('#calc-btns');
+          let expr = '', current = '0'; const update = () => { disp.textContent = current; exprDiv.textContent = expr; };
+          'C,±,%,÷,7,8,9,×,4,5,6,−,1,2,3,+,0,.,='.split(',').forEach(v => { const b = document.createElement('button'); b.textContent = v; b.style.cssText = `background:${['÷','×','−','+','='].includes(v)?'var(--md-sys-color-primary-container)':'var(--md-sys-color-surface-container-high)'};border-radius:40px;font-size:24px;padding:16px;border:none;color:var(--md-sys-color-on-surface);`; b.onclick = () => { if(v==='C'){ expr=''; current='0'; } else if(v==='±') current = (-parseFloat(current)).toString(); else if(v==='%') current = (parseFloat(current)/100).toString(); else if('÷×−+'.includes(v)){ expr = current + ' ' + v + ' '; current = '0'; } else if(v==='='){ try { current = eval(expr.replace(/×/g,'*').replace(/÷/g,'/').replace(/−/g,'-')+current).toString(); expr=''; } catch { current='Ошибка'; } } else { if(v==='.' && current.includes('.')) return; current = current==='0'&&v!=='.' ? v : current+v; } update(); }; btns.appendChild(b); });
+          return c;
+        }
+      },
+      { id: 'clock', name: 'Часы', icon: 'schedule', createWindow: () => {
+          const c = document.createElement('div'); c.innerHTML = '<div style="padding:16px;text-align:center;"><div style="background:var(--md-sys-color-surface-container-high);border-radius:40px;padding:24px;"><div id="clock-digital" style="font-size:68px;"></div><div id="clock-date" style="font-size:18px;opacity:0.7;margin-top:8px;"></div></div></div>';
+          const upd = () => { const d = new Date(); c.querySelector('#clock-digital').textContent = d.toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}); c.querySelector('#clock-date').textContent = d.toLocaleDateString('ru-RU', {day:'numeric', month:'long', weekday:'long'}); };
+          upd(); const int = setInterval(upd, 1000); c.cleanup = () => clearInterval(int); return c;
+        }
+      },     // ---------- Скрытые приложения‑поставщики плиток QS ----------
+  { id: 'core-theme', name: 'Theme', hidden: true, tiles: [
+    {
+      id: 'theme_toggle',
+      label: 'Тёмная тема',
+      icon: 'dark_mode',
+      type: 'switch',
+      action: () => {
+        const isDark = !document.body.classList.contains('dark-theme');
+        document.body.classList.toggle('dark-theme', isDark);
+        localStorage.setItem('android16-theme', isDark ? 'dark' : 'light');
+        applyWallpaper();
+        applyAccentColor(state.accentColor);
+        const tile = state.tiles.find(t => t.id === 'theme_toggle');
+        if (tile) {
+          tile.active = isDark;
+          renderTiles();
+          localStorage.setItem('tiles', JSON.stringify(state.tiles));
+        }
+      }
+    }
+  ]},
+  { id: 'core-flashlight', name: 'Flashlight', hidden: true, tiles: [
+    {
+      id: 'flashlight',
+      label: 'Фонарик',
+      icon: 'flashlight_on',
+      type: 'switch',
+      action: () => {
+        const tile = state.tiles.find(t => t.id === 'flashlight');
+        if (!tile) return;
+        const activate = !tile.active;
+        tile.active = activate;
+        localStorage.setItem('tiles', JSON.stringify(state.tiles));
+        renderTiles();
+
+        if (activate) {
+          if (typeof ImageCapture !== 'undefined' && 'mediaDevices' in navigator) {
+            navigator.mediaDevices.enumerateDevices().then(devices => {
+              const cameras = devices.filter(d => d.kind === 'videoinput');
+              if (cameras.length === 0) { fallbackOverlay(true); return; }
+              const camera = cameras[cameras.length - 1];
+              navigator.mediaDevices.getUserMedia({
+                video: { deviceId: camera.deviceId, facingMode: ['user', 'environment'], height: {ideal: 1080}, width: {ideal: 1920} }
+              }).then(stream => {
+                const track = stream.getVideoTracks()[0];
+                try {
+                  const imageCapture = new ImageCapture(track);
+                  imageCapture.getPhotoCapabilities().then(() => {
+                    track.applyConstraints({ advanced: [{torch: true}] });
+                  }).catch(() => { fallbackOverlay(true); });
+                } catch (e) { fallbackOverlay(true); }
+              }).catch(() => { fallbackOverlay(true); });
+            }).catch(() => { fallbackOverlay(true); });
+          } else { fallbackOverlay(true); }
+        } else { fallbackOverlay(false); }
+
+        function fallbackOverlay(on) {
+          const overlay = document.getElementById('brightness-overlay');
+          if (!overlay) return;
+          overlay.style.backgroundColor = on ? 'white' : 'black';
+          overlay.style.opacity = on ? '1' : '0';
+        }
+      }
+    }
+  ]},
+  { id: 'core-dnd', name: 'DND', hidden: true, tiles: [
+    {
+      id: 'dnd',
+      label: 'Не беспокоить',
+      icon: 'do_not_disturb_on',
+      type: 'switch',
+      action: () => {
+        const tile = state.tiles.find(t => t.id === 'dnd');
+        if (tile) {
+          tile.active = !tile.active;
+          state.notificationsEnabled = !tile.active;
+          renderNotifications();
+          renderTiles();
+          localStorage.setItem('tiles', JSON.stringify(state.tiles));
+        }
+      }
+    }
+  ]},
+  { id: 'core-battery', name: 'Battery', hidden: true, tiles: [
+    {
+      id: 'battery_saver',
+      label: 'Экономия',
+      icon: 'battery_saver',
+      type: 'switch',
+      action: () => {
+        const tile = state.tiles.find(t => t.id === 'battery_saver');
+        if (tile) {
+          tile.active = !tile.active;
+          alert(tile.active ? 'Режим экономии включён' : 'Режим экономии выключен');
+          renderTiles();
+          localStorage.setItem('tiles', JSON.stringify(state.tiles));
+        }
+      }
+    }
+  ]},
+  { id: 'core-location', name: 'Location', hidden: true, tiles: [
+    {
+      id: 'location',
+      label: 'Геолокация',
+      icon: 'location_on',
+      type: 'switch',
+      action: () => {
+        const tile = state.tiles.find(t => t.id === 'location');
+        if (!tile) return;
+        if (tile.active) {
+          tile.active = false;
+          renderTiles();
+          localStorage.setItem('tiles', JSON.stringify(state.tiles));
+          return;
+        }
+        if (!navigator.geolocation) {
+          alert('Геолокация не поддерживается');
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            alert(`Широта: ${pos.coords.latitude.toFixed(4)}, Долгота: ${pos.coords.longitude.toFixed(4)}`);
+            tile.active = true;
+            renderTiles();
+            localStorage.setItem('tiles', JSON.stringify(state.tiles));
+          },
+          err => { alert('Не удалось получить координаты'); }
+        );
+      }
+    }
+  ]},
+  { id: 'core-screenshot', name: 'Screenshot', hidden: true, tiles: [
+    {
+      id: 'screenshot',
+      label: 'Скриншот',
+      icon: 'camera_alt',
+      launchApp: true,
+      appId: 'screenshot',
+      action: () => {}
+    }
+  ]},
+  { id: 'core-screenrecord', name: 'Screen Record', hidden: true, tiles: [
+    {
+      id: 'screen_record',
+      label: 'Запись экрана',
+      icon: 'videocam',
+      launchApp: true,
+      appId: 'screenrecord',
+      action: () => {}
+    }
+  ]}
+
+    ];
+    preinstalledApps.forEach(app => state.installedApps.set(app.id, app));
+preinstalledApps.forEach(app => {
+  if (app.tiles) window.registerAppTiles(app.id, app.tiles);
+});
+
+    window.registerWidget = function(widgetDef) {
+      state.widgets.set(widgetDef.id, widgetDef);
+    };
+
+
+    function createWidgetWindow(widgetId, posX = 200, posY = 200) {
+      const def = state.widgets.get(widgetId);
+      if (!def) return;
+      const id = `widget-${widgetId}-${Date.now()}`;
+      const win = document.createElement('div');
+      win.className = 'app-window widget-window';
+      win.dataset.widgetId = widgetId;
+      win.dataset.id = id;
+      win.style.width = '280px';
+      win.style.height = '200px';
+      win.style.left = posX + 'px';
+      win.style.top = posY + 'px';
+      win.style.zIndex = ++state.nextZIndex;
+      win.style.background = 'transparent';
+      win.style.border = 'none';
+      win.style.boxShadow = 'none';
+
+
+      const content = document.createElement('div');
+      content.className = 'window-content';
+      content.style.background = 'transparent';
+      if (typeof def.content === 'function') {
+        const widgetContent = def.content();
+        if (typeof widgetContent === 'string') content.innerHTML = widgetContent;
+        else if (widgetContent instanceof Node) content.appendChild(widgetContent);
+      } else if (def.html) {
+        content.innerHTML = def.html;
+      }
+      win.appendChild(content);
+
+
+      const closeBtn = document.createElement('div');
+      closeBtn.className = 'widget-window-close';
+      closeBtn.innerHTML = '<span class="material-icons">close</span>';
+      closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        closeWidgetWindow(id);
+      };
+      win.appendChild(closeBtn);
+
+
+      windowsLayer.appendChild(win);
+      state.widgetInstances.set(id, { element: win, widgetId });
+
+
+      makeWindowDraggable(win, win); // весь виджет можно таскать
+      makeResizable(win, null); // добавим ресайз хендл позже, если нужно
+
+
+      return id;
+    }
+
+
+    function closeWidgetWindow(id) {
+      const obj = state.widgetInstances.get(id);
+      if (!obj) return;
+      obj.element.remove();
+      state.widgetInstances.delete(id);
+    }
+
+
+    window.registerWidget({ id: 'analog', name: 'Аналоговые часы', content: () => '<div style="text-align:center;"><canvas width="150" height="150"></canvas></div>' });
+    window.registerWidget({ id: 'digital', name: 'Цифровые часы', content: () => '<div style="font-size:32px;">12:34</div>' });
+
+
+    function applyModule(mod) { }
+    function removeModuleEffect(id) { }
+    function applyAllModules() { JSON.parse(localStorage.getItem('userModules')||'[]').filter(m=>m.enabled).forEach(applyModule); }
+    function ensureFileSystem() { let fsData = JSON.parse(localStorage.getItem('fs')); if (!fsData) fsData = { '/system': {}, '/data': { 'apps': {} } }; else { if (!fsData['/data']) fsData['/data'] = {}; if (!fsData['/data']['apps']) fsData['/data']['apps'] = {}; } localStorage.setItem('fs', JSON.stringify(fsData)); return fsData; }
+    async function bootSequence() {
+  const bar = document.getElementById('boot-progress-bar'),
+        status = document.getElementById('boot-status'),
+        boot = document.getElementById('boot-screen');
+
+  const log = (msg, p) => {
+    status.textContent = msg;
+    bar.style.width = p + '%';
+  };
+
+  // Все шаги выполняются мгновенно
+  log('Загрузка...', 20);
+  ensureFileSystem();
+  log('Приложения', 60);
+  loadInstalledApps();
+  log('Модули', 75);
+  applyAllModules();
+  log('Рабочий стол', 85);
+  renderAppDrawer();
+  renderTiles();
+  renderNotifications();
+  SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
+
+  // Применяем обои после загрузки провайдеров
+  applyWallpaper();
+  log('Готово', 100);
+
+  // Плавное исчезновение экрана загрузки
+  boot.style.opacity = '0';
+  // Ждём окончания transition (0.4s) или fallback через 500 мс
+  await new Promise(resolve => {
+    const onTransitionEnd = () => {
+      boot.removeEventListener('transitionend', onTransitionEnd);
+      resolve();
+    };
+    boot.addEventListener('transitionend', onTransitionEnd, { once: true });
+    // На случай, если transition по какой-то причине не сработал
+    setTimeout(resolve, 500);
+  });
+  boot.style.display = 'none';
+}
+
+
+    async function initBattery() { try { const b = await navigator.getBattery(); const upd = () => { const lvl = b.level*100; SystemAPI.getComponent('statusBar')?.updateBattery(lvl); }; upd(); b.addEventListener('levelchange', upd); b.addEventListener('chargingchange', upd); } catch(e) {} }
+    function updateClocks() { SystemAPI.getComponent('statusBar')?.updateTime(); document.getElementById('widget-time').textContent = new Date().toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'}); document.getElementById('widget-date').textContent = new Date().toLocaleDateString('ru-RU', {day:'numeric', month:'long', weekday:'short'}); }
+
+
+    function snapToGrid(v) { return Math.round(v/GRID_SIZE)*GRID_SIZE; }
+    function makeDraggable(el, container, snap=false) {
+      let ox, oy, drag = false, raf;
+      const startDrag = (e) => {
+        if(e.button && e.button !== 0) return;
+        if(e.target.closest('button')||e.target.closest('.widget-resize-handle')||e.target.closest('.tile-resize-lever')) return;
+        e.preventDefault();
+        const r = el.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        ox = clientX - r.left;
+        oy = clientY - r.top;
+        drag = true;
+        el.style.cursor = 'grabbing';
+        el.classList.add('dragging');
+      };
+      const moveDrag = (e) => {
+        if(!drag) return;
+        e.preventDefault();
+        raf = requestAnimationFrame(() => {
+          const cr = container.getBoundingClientRect();
+          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+          const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+          let x = clientX - ox - cr.left;
+          let y = clientY - oy - cr.top;
+          if(snap){ x = snapToGrid(x); y = snapToGrid(y); }
+          x = Math.max(0, Math.min(x, cr.width - el.offsetWidth));
+          y = Math.max(0, Math.min(y, cr.height - el.offsetHeight));
+          el.style.left = x + 'px';
+          el.style.top = y + 'px';
+        });
+      };
+      const endDrag = () => { drag = false; el.style.cursor = ''; el.classList.remove('dragging'); };
+      el.addEventListener('mousedown', startDrag);
+      el.addEventListener('touchstart', startDrag, {passive: false});
+      window.addEventListener('mousemove', moveDrag);
+      window.addEventListener('touchmove', moveDrag, {passive: false});
+      window.addEventListener('mouseup', endDrag);
+      window.addEventListener('touchend', endDrag);
+    }
+    const widget=document.getElementById('widget'); makeDraggable(widget,desktop,true);
+
+
+    function makeResizable(el, handle, snap) {
+      let startX, startY, startWidth, startHeight, resizing = false;
+      let rafId = null;
+      const onMouseMove = (e) => {
+        if (!resizing) return;
+        e.preventDefault();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          let newWidth = startWidth + clientX - startX;
+          let newHeight = startHeight + clientY - startY;
+          if (snap) { newWidth = snapToGrid(newWidth); newHeight = snapToGrid(newHeight); }
+          newWidth = Math.max(260, newWidth);
+          newHeight = Math.max(180, newHeight);
+          el.style.width = newWidth + 'px';
+          el.style.height = newHeight + 'px';
+        });
+      };
+      const onMouseUp = () => {
+        if (resizing) {
+          resizing = false;
+          el.classList.remove('resizing');
+          el.style.transition = '';
+          if (rafId) cancelAnimationFrame(rafId);
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('touchmove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+          window.removeEventListener('touchend', onMouseUp);
+        }
+        el.style.transition = '';   // возвращаем плавность
+      };
+      const startResize = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        resizing = true;
+        el.classList.add('resizing');
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        startX = clientX;
+        startY = clientY;
+        startWidth = el.offsetWidth;
+        startHeight = el.offsetHeight;
+        el.style.transition = 'none';
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('touchmove', onMouseMove, { passive: false });
+        window.addEventListener('mouseup', onMouseUp);
+        window.addEventListener('touchend', onMouseUp);
+      };
+      handle.addEventListener('mousedown', startResize);
+      handle.addEventListener('touchstart', startResize, { passive: false });
+    }
+    makeResizable(widget, widget.querySelector('.widget-resize-handle'), true);
+
+
+    function createWindow(appType, customContent, intent, sourceRect = null) {
+  const id = `${appType}-${Date.now()}`;
+  const win = document.createElement('div');
+  win.className = 'app-window';
+  win.dataset.app = appType;
+  win.dataset.id = id;
+
+  // Целевые размеры и позиция
+  const targetLeft = 100 + (state.windows.size % 5) * 30;
+  const targetTop = 80 + (state.windows.size % 5) * 20;
+  const targetWidth = 400;
+  const targetHeight = 350;
+
+  // Начальные размеры и позиция (если передан sourceRect)
+  if (sourceRect) {
+    const finalLeft = 100 + (state.windows.size % 5) * 30;
+    const finalTop = 80 + (state.windows.size % 5) * 20;
+    animateMorph(win,
+        { left: sourceRect.left, top: sourceRect.top, width: sourceRect.width, height: sourceRect.height, borderRadius: '24px' },
+        { left: finalLeft, top: finalTop, width: 400, height: 350, borderRadius: '24px' },
+        { duration: 0.35, onComplete: () => { win.style.transition = ''; } }
+    );
+    // старый код удалить
+} else {
+    win.style.left = targetLeft + 'px';
+    win.style.top = targetTop + 'px';
+    win.style.width = targetWidth + 'px';
+    win.style.height = targetHeight + 'px';
+  }
+
+  win.style.zIndex = ++state.nextZIndex;
+
+  const dragLine = document.createElement('div');
+  dragLine.className = 'window-drag-line';
+
+  const header = document.createElement('div');
+  header.className = 'window-header';
+  header.innerHTML = `<span>${getAppDisplayName(appType)}</span>
+    <div>
+      <button class="minimize-btn"><span class="material-icons">minimize</span></button>
+      <button class="close-btn"><span class="material-icons">close</span></button>
+    </div>`;
+
+  const content = document.createElement('div');
+  content.className = 'window-content';
+
+  if (customContent) {
+    content.appendChild(customContent);
+  } else {
+    const app = state.installedApps.get(appType);
+    if (app && typeof app.createWindow === 'function') {
+      try {
+        const appContent = app.createWindow(intent);
+        if (appContent instanceof Node) content.appendChild(appContent);
+        else content.innerHTML = '<p>Ошибка загрузки приложения</p>';
+      } catch (e) {
+        console.error('Ошибка создания окна приложения', appType, e);
+        content.innerHTML = '<p>Ошибка при запуске приложения</p>';
+      }
+    } else {
+      content.innerHTML = '<p>Приложение не найдено</p>';
+    }
+  }
+
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'resize-handle material-icons';
+  resizeHandle.textContent = 'open_in_full';
+
+  win.append(dragLine, header, content, resizeHandle);
+  windowsLayer.appendChild(win);
+
+  state.windows.set(id, {
+    element: win,
+    appType,
+    minimized: false,
+    id,
+    isFullscreen: false,
+    prevRect: null
+  });
+
+  makeWindowDraggable(win, header);
+  makeResizable(win, resizeHandle);
+
+  win.querySelector('.close-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeWindow(id);
+  });
+  win.querySelector('.minimize-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    minimizeWindow(id);
+  });
+
+  win.addEventListener('mousedown', () => bringToFront(win));
+  makeFullscreenDraggable(win, dragLine, id);
+
+  // Анимация раскрытия из sourceRect
+  if (sourceRect) {
+    // Принудительный reflow
+    win.offsetHeight;
+    // Запускаем анимацию к целевым размерам и позиции
+    win.style.transition = 'all 0.35s cubic-bezier(0.2, 0.9, 0.4, 1)';
+    win.style.left = targetLeft + 'px';
+    win.style.top = targetTop + 'px';
+    win.style.width = targetWidth + 'px';
+    win.style.height = targetHeight + 'px';
+
+    // Убираем transition после завершения анимации
+    const onTransitionEnd = () => {
+      win.style.transition = '';
+      win.removeEventListener('transitionend', onTransitionEnd);
+    };
+    win.addEventListener('transitionend', onTransitionEnd);
+  }
+
+  updateWindowCounter();
+  updateTaskbarFullscreen();
+  return id;
+}
+
+
+    function bringToFront(win) { win.style.zIndex = ++state.nextZIndex; }
+    function closeWindow(id) {
+      const obj = state.windows.get(id);
+      if (!obj) return;
+      obj.element.classList.add('closing');
+      setTimeout(() => {
+        if (obj.cleanup) obj.cleanup();
+        obj.element.remove();
+        state.windows.delete(id);
+        if (obj.minimized) removeMinimizedTab(id);
+        updateWindowCounter();
+        updateTaskbarFullscreen();
+      }, 200);
+    }
+
+
+    function updateTaskbarFullscreen() {
+      let hasFullscreen = false;
+      for (let [id, obj] of state.windows) {
+        if (obj.isFullscreen && !obj.minimized) {
+          hasFullscreen = true;
+          break;
+        }
+      }
+      taskbar.classList.toggle('fullscreen-active', hasFullscreen);
+    }
+
+
+    function getAppDisplayName(appId) {
+      if(state.installedApps.has(appId)) return state.installedApps.get(appId).name;
+      const m={settings:'Настройки',calculator:'Калькулятор',clock:'Часы',downloads:'Загрузки'};
+      return m[appId]||appId;
+    }
+
+
+    function makeWindowDraggable(win, handle) {
+      let ox, oy, drag = false, raf;
+      const startDrag = (e) => {
+        if (e.button && e.button !== 0) return;
+        if (e.target.closest('button') || e.target.closest('.window-drag-line')) return;
+        e.preventDefault();
+        drag = true;
+        const r = win.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        ox = clientX - r.left;
+        oy = clientY - r.top;
+        win.style.cursor = 'move';
+        win.style.transition = 'none';
+        win.classList.add('dragging');
+        bringToFront(win);
+      };
+      const moveDrag = (e) => {
+        if (!drag) return;
+        e.preventDefault();
+        raf = requestAnimationFrame(() => {
+          const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+          const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+          let x = clientX - ox;
+          let y = clientY - oy;
+          x = Math.max(0, Math.min(x, window.innerWidth - win.offsetWidth));
+          y = Math.max(0, Math.min(y, window.innerHeight - win.offsetHeight));
+          win.style.left = x + 'px';
+          win.style.top = y + 'px';
+        });
+      };
+      const endDrag = () => {
+        if (drag) {
+          drag = false;
+          win.style.cursor = '';
+          win.style.transition = '';
+          win.classList.remove('dragging');
+        }
+      };
+      handle.addEventListener('mousedown', startDrag);
+      handle.addEventListener('touchstart', startDrag, {passive: false});
+      window.addEventListener('mousemove', moveDrag);
+      window.addEventListener('touchmove', moveDrag, {passive: false});
+      window.addEventListener('mouseup', endDrag);
+      window.addEventListener('touchend', endDrag);
+    }
+
+
+    function makeFullscreenDraggable(win, dragLine, id) {
+  let drag = false;
+  let startY;
+  const obj = state.windows.get(id);
+  let previewDirection = null;
+  let targetRect = null;
+  let previewPlaceholderTab = null;
+
+  // Сохраняем инлайн-стили, которые были установлены при входе в фулскрин
+  let savedInlineStyles = null;
+
+  const clearPreview = () => {
+    if (previewPlaceholderTab) { previewPlaceholderTab.remove(); previewPlaceholderTab = null; }
+    fullscreenPreview.classList.remove('blur-active');
+    fullscreenPreview.style.display = 'none';
+    dragLine.classList.remove('preview-minimize');
+    dragLine.classList.remove('active-gesture');
+    dragLine.classList.remove('animating');
+    previewDirection = null;
+    targetRect = null;
+
+    // Восстанавливаем инлайн-стили линии, если они были сохранены
+    if (savedInlineStyles) {
+      dragLine.style.width = savedInlineStyles.width;
+      dragLine.style.height = savedInlineStyles.height;
+      dragLine.style.background = savedInlineStyles.background;
+      savedInlineStyles = null;
+    }
+  };
+
+  const getStartRect = () => {
+    if (obj.minimized) {
+      const tab = document.querySelector(`.minimized-tab[data-window-id="${id}"]`);
+      if (tab) { const rect = tab.getBoundingClientRect(); return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }; }
+      return { left: 0, top: 0, width: 120, height: 56 };
+    }
+    return win.getBoundingClientRect();
+  };
+
+  const animatePreviewTo = (direction) => {
+    if (previewDirection === direction) return;
+    const desktopRect = desktop.getBoundingClientRect();
+    const taskbarRect = taskbar.getBoundingClientRect();
+    const startRect = getStartRect();
+    let newTarget;
+    let blurActive = false;
+    if (direction === 'fullscreen') {
+      newTarget = { left: desktopRect.left + 16, top: desktopRect.top + 16, width: desktopRect.width - 32, height: desktopRect.height - 32 };
+      blurActive = true;
+      dragLine.classList.add('active-gesture');
+    } else if (direction === 'normal') {
+      const left = obj.prevRect?.left ? parseFloat(obj.prevRect.left) : 100;
+      const top = obj.prevRect?.top ? parseFloat(obj.prevRect.top) : 80;
+      const width = obj.prevRect?.width ? parseFloat(obj.prevRect.width) : 400;
+      const height = obj.prevRect?.height ? parseFloat(obj.prevRect.height) : 350;
+      newTarget = { left, top, width, height };
+      blurActive = true;
+      dragLine.classList.add('active-gesture');
+    } else if (direction === 'minimized') {
+      if (previewPlaceholderTab) { previewPlaceholderTab.remove(); previewPlaceholderTab = null; }
+      const container = document.getElementById('minimized-windows');
+      const app = state.installedApps.get(obj.appType);
+      const icon = app ? app.icon : 'apps';
+      const title = getAppDisplayName(obj.appType);
+      const tempTab = document.createElement('div');
+      tempTab.className = 'minimized-tab';
+      tempTab.style.opacity = '0';
+      tempTab.style.pointerEvents = 'none';
+      tempTab.innerHTML = `<span class="material-icons tab-icon">${icon}</span><span class="tab-title">${title}</span>`;
+      container.appendChild(tempTab);
+      const tabRect = tempTab.getBoundingClientRect();
+      tempTab.remove();
+      previewPlaceholderTab = document.createElement('div');
+      previewPlaceholderTab.className = 'minimized-tab preview-placeholder';
+      previewPlaceholderTab.style.opacity = '0';
+      previewPlaceholderTab.style.transition = 'opacity 0.2s';
+      previewPlaceholderTab.style.pointerEvents = 'none';
+      previewPlaceholderTab.innerHTML = `<span class="material-icons tab-icon">${icon}</span><span class="tab-title">${title}</span>`;
+      container.appendChild(previewPlaceholderTab);
+      previewPlaceholderTab.offsetHeight;
+      previewPlaceholderTab.style.opacity = '0.6';
+      newTarget = { left: tabRect.left, top: tabRect.top, width: tabRect.width, height: tabRect.height };
+      blurActive = false;
+      dragLine.classList.add('active-gesture');
+    } else {
+      newTarget = startRect;
+      blurActive = false;
+      dragLine.classList.remove('active-gesture');
+    }
+    fullscreenPreview.style.left = startRect.left + 'px';
+    fullscreenPreview.style.top = startRect.top + 'px';
+    fullscreenPreview.style.width = startRect.width + 'px';
+    fullscreenPreview.style.height = startRect.height + 'px';
+    fullscreenPreview.style.display = 'block';
+    fullscreenPreview.offsetHeight;
+    fullscreenPreview.style.left = newTarget.left + 'px';
+    fullscreenPreview.style.top = newTarget.top + 'px';
+    fullscreenPreview.style.width = newTarget.width + 'px';
+    fullscreenPreview.style.height = newTarget.height + 'px';
+    if (blurActive) fullscreenPreview.classList.add('blur-active'); else fullscreenPreview.classList.remove('blur-active');
+    previewDirection = direction;
+    targetRect = newTarget;
+    dragLine.classList.toggle('preview-minimize', direction === 'minimized');
+  };
+
+  const onMouseMove = e => {
+    if (!drag) return;
+    e.preventDefault();
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const dy = clientY - startY;
+    const threshold = 40;
+    const strongThreshold = 100;
+    let newDirection = null;
+    if (obj.isFullscreen) {
+      if (dy > strongThreshold) newDirection = 'minimized';
+      else if (dy > threshold) newDirection = 'normal';
+    } else if (obj.minimized) {
+      if (dy < -strongThreshold) newDirection = 'fullscreen';
+      else if (dy < -threshold) newDirection = 'normal';
+    } else {
+      if (dy < -threshold) newDirection = 'fullscreen';
+      else if (dy > threshold) newDirection = 'minimized';
+    }
+    if (!newDirection && previewDirection !== null) animatePreviewTo(null);
+    else if (newDirection) animatePreviewTo(newDirection);
+  };
+
+  const onMouseUp = e => {
+    if (!drag) return;
+    drag = false;
+    win.style.transition = '';
+    const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+    const dy = clientY - startY;
+    const threshold = 20;
+    const strongThreshold = 80;
+    let action = null;
+    if (obj.isFullscreen) {
+      if (dy > strongThreshold) action = 'minimize';
+      else if (dy > threshold) action = 'exitFullscreen';
+    } else if (obj.minimized) {
+      if (dy < -strongThreshold) action = 'fullscreen';
+      else if (dy < -threshold) action = 'restore';
+    } else {
+      if (dy < -threshold) action = 'fullscreen';
+      else if (dy > threshold) action = 'minimize';
+    }
+    if (!action) {
+      fullscreenPreview.style.opacity = '0';
+      fullscreenPreview.classList.remove('blur-active');
+      const onTransitionEnd = () => {
+        fullscreenPreview.style.display = 'none';
+        fullscreenPreview.style.opacity = '';
+        fullscreenPreview.removeEventListener('transitionend', onTransitionEnd);
+        if (previewPlaceholderTab) { previewPlaceholderTab.remove(); previewPlaceholderTab = null; }
+      };
+      fullscreenPreview.addEventListener('transitionend', onTransitionEnd);
+      setTimeout(() => {
+        fullscreenPreview.style.display = 'none';
+        fullscreenPreview.style.opacity = '';
+        fullscreenPreview.removeEventListener('transitionend', onTransitionEnd);
+        if (previewPlaceholderTab) { previewPlaceholderTab.remove(); previewPlaceholderTab = null; }
+      }, 300);
+    } else {
+      fullscreenPreview.style.display = 'none';
+      fullscreenPreview.classList.remove('blur-active');
+      if (previewPlaceholderTab) { previewPlaceholderTab.remove(); previewPlaceholderTab = null; }
+    }
+    // Убираем все временные классы и восстанавливаем инлайн-стили, если жест отменён
+    dragLine.classList.remove('preview-minimize');
+    dragLine.classList.remove('active-gesture');
+    dragLine.classList.remove('animating');
+    if (savedInlineStyles) {
+      dragLine.style.width = savedInlineStyles.width;
+      dragLine.style.height = savedInlineStyles.height;
+      dragLine.style.background = savedInlineStyles.background;
+      savedInlineStyles = null;
+    }
+    previewDirection = null;
+    targetRect = null;
+    if (action) {
+      if (action === 'fullscreen') enterFullscreen(id);
+      else if (action === 'exitFullscreen') exitFullscreen(id);
+      else if (action === 'minimize') minimizeWindow(id);
+      else if (action === 'restore') restoreWindow(id);
+    }
+    window.removeEventListener('mousemove', onMouseMove);
+    window.removeEventListener('touchmove', onMouseMove);
+    window.removeEventListener('mouseup', onMouseUp);
+    window.removeEventListener('touchend', onMouseUp);
+  };
+
+  const startDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    drag = true;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    startY = clientY;
+    win.style.transition = 'none';
+    clearPreview();
+
+    // Если окно в полноэкранном режиме, убираем инлайн-стили, мешающие классам менять форму линии
+    if (obj.isFullscreen) {
+      savedInlineStyles = {
+        width: dragLine.style.width,
+        height: dragLine.style.height,
+        background: dragLine.style.background
+      };
+      dragLine.style.width = '';
+      dragLine.style.height = '';
+      dragLine.style.background = '';
+      dragLine.classList.add('animating');  // включаем плавность
+    } else {
+      savedInlineStyles = null;
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('touchmove', onMouseMove, {passive: false});
+    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('touchend', onMouseUp);
+  };
+
+  dragLine.addEventListener('mousedown', startDrag);
+  dragLine.addEventListener('touchstart', startDrag, {passive: false});
+}
+
+
+   function enterFullscreen(id) {
+  const obj = state.windows.get(id);
+  if (!obj || obj.isFullscreen) return;
+  const win = obj.element;
+  const desktopRect = desktop.getBoundingClientRect();
+  const statusBar = document.getElementById('status-bar');
+  const statusBarHeight = statusBar.offsetHeight;
+
+  obj.prevRect = { left: win.style.left, top: win.style.top, width: win.style.width, height: win.style.height };
+  obj.isFullscreen = true;
+  win.classList.add('fullscreen');
+
+  win.style.transform = 'none';
+  win.style.willChange = 'auto';
+
+  win.style.left = desktopRect.left + 'px';
+  win.style.top = desktopRect.top + 'px';
+  win.style.width = desktopRect.width + 'px';
+  win.style.height = desktopRect.height + 'px';
+
+  const dragLine = win.querySelector('.window-drag-line');
+  if (dragLine) {
+    const lineRect = dragLine.getBoundingClientRect();
+
+    // Мгновенно фиксируем позицию линии в том месте, где она была (opacity: 0 – не видна)
+    dragLine.style.transition = 'none';
+    dragLine.style.position = 'fixed';
+    dragLine.style.left = lineRect.left + 'px';
+    dragLine.style.top = lineRect.top + 'px';
+    dragLine.style.width = lineRect.width + 'px';
+    dragLine.style.height = lineRect.height + 'px';
+    dragLine.style.transform = 'none';
+    dragLine.style.zIndex = '9999';
+    dragLine.style.pointerEvents = 'auto';
+    dragLine.style.visibility = 'visible';
+    dragLine.style.background = 'var(--md-sys-color-outline-variant)';
+    // opacity намеренно не трогаем – в CSS она 0
+
+    // Принудительный reflow, чтобы браузер «увидел» начальное состояние
+    dragLine.offsetHeight;
+
+    // Добавляем анимирующий класс (transition: all 0.3s …)
+    dragLine.classList.add('animating');
+
+    // Конечные стили – линия перемещается и одновременно плавно проявляется
+    const statusBarRect = statusBar.getBoundingClientRect();
+    dragLine.style.left = (statusBarRect.left + statusBarRect.width / 2) + 'px';
+    dragLine.style.top = (statusBarRect.top + statusBarRect.height / 2) + 'px';
+    dragLine.style.transform = 'translate(-50%, -50%)';
+    dragLine.style.width = '80px';
+    dragLine.style.height = '4px';
+    dragLine.style.opacity = '1';   // теперь анимация затронет и opacity
+
+    const onTransitionEnd = () => {
+      dragLine.classList.remove('animating');
+      dragLine.removeEventListener('transitionend', onTransitionEnd);
+    };
+    dragLine.addEventListener('transitionend', onTransitionEnd);
+  }
+
+  updateTaskbarFullscreen();
+}
+
+
+   function exitFullscreen(id) {
+  const obj = state.windows.get(id);
+  if (!obj || !obj.isFullscreen) return;
+  const win = obj.element;
+  obj.isFullscreen = false;
+  win.classList.remove('fullscreen');
+  if (obj.prevRect) {
+    win.style.left = obj.prevRect.left;
+    win.style.top = obj.prevRect.top;
+    win.style.width = obj.prevRect.width;
+    win.style.height = obj.prevRect.height;
+  } else {
+    win.style.left = '100px';
+    win.style.top = '80px';
+    win.style.width = '400px';
+    win.style.height = '350px';
+  }
+
+  const dragLine = win.querySelector('.window-drag-line');
+  if (dragLine) {
+    // Плавно скрываем линию перед сбросом инлайн-стилей
+    dragLine.style.transition = 'opacity 0.3s';
+    dragLine.style.opacity = '0';
+    const onTransitionEnd = () => {
+      dragLine.style.position = '';
+      dragLine.style.top = '';
+      dragLine.style.left = '';
+      dragLine.style.transform = '';
+      dragLine.style.zIndex = '';
+      dragLine.style.pointerEvents = '';
+      dragLine.style.width = '';
+      dragLine.style.height = '';
+      dragLine.style.background = '';
+      dragLine.style.visibility = '';
+      dragLine.style.opacity = '';
+      dragLine.style.transition = '';
+      dragLine.classList.remove('animating');
+      dragLine.removeEventListener('transitionend', onTransitionEnd);
+    };
+    dragLine.addEventListener('transitionend', onTransitionEnd);
+  }
+
+  updateTaskbarFullscreen();
+}
+
+
+    function minimizeWindow(id) {
+      const obj = state.windows.get(id);
+      if (!obj || obj.minimized) return;
+      const container = document.getElementById('minimized-windows');
+      const app = state.installedApps.get(obj.appType);
+      const icon = app ? app.icon : 'apps';
+      const title = getAppDisplayName(obj.appType);
+      let tab = document.querySelector(`.minimized-tab[data-window-id="${id}"]`);
+      if (!tab) {
+        tab = document.createElement('div');
+        tab.className = 'minimized-tab';
+        tab.dataset.windowId = id;
+        tab.innerHTML = `<span class="material-icons tab-icon">${icon}</span><span class="tab-title">${title}</span>`;
+        tab.addEventListener('click', (e) => { e.stopPropagation(); restoreWindow(id); });
+        container.appendChild(tab);
+      }
+      tab.style.opacity = '1';
+      tab.style.pointerEvents = 'auto';
+      const tabRect = tab.getBoundingClientRect();
+      if (obj.isFullscreen) {
+        obj.isFullscreen = false;
+        const win = obj.element;
+        win.classList.remove('fullscreen');
+        if (obj.prevRect) {
+          win.style.left = obj.prevRect.left;
+          win.style.top = obj.prevRect.top;
+          win.style.width = obj.prevRect.width;
+          win.style.height = obj.prevRect.height;
+        }
+        const dragLine = win.querySelector('.window-drag-line');
+        if (dragLine) { dragLine.style.position = ''; dragLine.style.top = ''; dragLine.style.left = ''; dragLine.style.transform = ''; dragLine.style.zIndex = ''; dragLine.style.height = ''; dragLine.style.width = ''; }
+        statusBar.style.backgroundColor = '';
+        statusBar.style.backdropFilter = '';
+        statusBar.style.borderBottom = '';
+      }
+      obj.minimized = true;
+      obj.prevRect = { left: obj.element.style.left, top: obj.element.style.top, width: obj.element.style.width, height: obj.element.style.height };
+      const dragLine = obj.element.querySelector('.window-drag-line');
+      if (dragLine) { dragLine.style.transition = 'all 0.2s'; dragLine.style.width = '40px'; dragLine.style.opacity = '0'; }
+      obj.element.style.transition = 'left 0.25s cubic-bezier(0.2,0,0,1), top 0.25s cubic-bezier(0.2,0,0,1), width 0.25s cubic-bezier(0.2,0,0,1), height 0.25s cubic-bezier(0.2,0,0,1), opacity 0.2s';
+      obj.element.style.left = tabRect.left + 'px';
+      obj.element.style.top = tabRect.top + 'px';
+      obj.element.style.width = tabRect.width + 'px';
+      obj.element.style.height = tabRect.height + 'px';
+      obj.element.style.opacity = '0';
+      setTimeout(() => {
+        obj.element.style.display = 'none';
+        obj.element.style.transition = '';
+        obj.element.style.opacity = '';
+        if (dragLine) { dragLine.style.transition = ''; dragLine.style.width = ''; dragLine.style.opacity = ''; }
+      }, 250);
+      updateWindowCounter();
+      updateTaskbarFullscreen();
+    }
+
+
+    function addMinimizedTab(windowObj) {
+      const container = document.getElementById('minimized-windows');
+      const app = state.installedApps.get(windowObj.appType);
+      const icon = app ? app.icon : 'apps';
+      const title = getAppDisplayName(windowObj.appType);
+      const tab = document.createElement('div');
+      tab.className = 'minimized-tab';
+      tab.dataset.windowId = windowObj.id;
+      tab.innerHTML = `<span class="material-icons tab-icon">${icon}</span><span class="tab-title">${title}</span>`;
+      tab.addEventListener('click', (e) => { e.stopPropagation(); restoreWindow(windowObj.id); });
+      container.appendChild(tab);
+    }
+
+
+    function removeMinimizedTab(windowId) {
+      const tab = document.querySelector(`.minimized-tab[data-window-id="${windowId}"]`);
+      if (tab) tab.remove();
+    }
+
+
+    function restoreWindow(id) {
+      const obj = state.windows.get(id);
+      if (!obj || !obj.minimized) return;
+      const tab = document.querySelector(`.minimized-tab[data-window-id="${id}"]`);
+      if (!tab) return;
+      const tabRect = tab.getBoundingClientRect();
+      obj.minimized = false;
+      obj.element.style.display = 'flex';
+      obj.element.style.transition = 'none';
+      obj.element.style.width = tabRect.width + 'px';
+      obj.element.style.height = tabRect.height + 'px';
+      obj.element.style.left = tabRect.left + 'px';
+      obj.element.style.top = tabRect.top + 'px';
+      obj.element.style.opacity = '0';
+      obj.element.style.zIndex = ++state.nextZIndex;
+      const dragLine = obj.element.querySelector('.window-drag-line');
+      if (dragLine) { dragLine.style.width = '40px'; dragLine.style.opacity = '0'; }
+      requestAnimationFrame(() => {
+        obj.element.style.transition = 'left 0.25s cubic-bezier(0.2,0,0,1), top 0.25s cubic-bezier(0.2,0,0,1), width 0.25s cubic-bezier(0.2,0,0,1), height 0.25s cubic-bezier(0.2,0,0,1), opacity 0.2s';
+        obj.element.style.width = obj.prevRect?.width || '400px';
+        obj.element.style.height = obj.prevRect?.height || '350px';
+        obj.element.style.left = obj.prevRect?.left || '100px';
+        obj.element.style.top = obj.prevRect?.top || '80px';
+        obj.element.style.opacity = '1';
+        if (dragLine) { dragLine.style.transition = 'width 0.25s, opacity 0.25s'; dragLine.style.width = '80px'; dragLine.style.opacity = ''; }
+      });
+      setTimeout(() => { obj.element.style.transition = ''; if (dragLine) dragLine.style.transition = ''; }, 250);
+      removeMinimizedTab(id);
+      updateWindowCounter();
+      updateTaskbarFullscreen();
+    }
+
+
+    function focusOrCreate(app, intent) {
+      for (let [id, obj] of state.windows) {
+        if (obj.appType === app && !obj.minimized) { bringToFront(obj.element); return; }
+      }
+      for (let [id, obj] of state.windows) {
+        if (obj.appType === app && obj.minimized) { restoreWindow(id); return; }
+      }
+      if (state.installedApps.has(app)) {
+        createWindow(app, null, intent);
+      } else {
+        console.warn('Приложение не найдено:', app);
+      }
+    }
+
+
+    function updateWindowCounter() {
+      const openWindows = Array.from(state.windows.values()).filter(obj => !obj.minimized);
+      document.getElementById('window-count-text').textContent = openWindows.length;
+    }
+
+
+    function renderTiles() { SystemAPI.getComponent('qsPanel')?.render(state.tiles); }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      const target = e.currentTarget;
+      const targetType = target.id === 'active-tiles-editor' ? 'active' : 'available';
+      const raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (targetType === 'active' && data.type === 'available') {
+        if (!state.tiles.some(t => t.id === data.id)) {
+          const dropIndex = getDropIndex(e, target);
+          const newTile = { ...data.tile, active: false, width: 'normal' };
+          if (dropIndex === -1) state.tiles.push(newTile);
+          else state.tiles.splice(dropIndex, 0, newTile);
+        }
+      } else if (targetType === 'available' && data.type === 'active') {
+        state.tiles.splice(data.index, 1);
+      } else if (targetType === 'active' && data.type === 'active') {
+        const from = data.index;
+        const to = getDropIndex(e, target);
+        if (from !== to && to !== -1) {
+          const moved = state.tiles.splice(from, 1)[0];
+          state.tiles.splice(to, 0, moved);
+        }
+      }
+      renderTileEditor();
+      renderTiles();
+      localStorage.setItem('tiles', JSON.stringify(state.tiles));
+    }
+
+
+    function getDropIndex(e, container) {
+      const children = [...container.children];
+      const mouseY = e.clientY;
+      for (let i = 0; i < children.length; i++) {
+        const rect = children[i].getBoundingClientRect();
+        if (mouseY < rect.top + rect.height / 2) return i;
+      }
+      return children.length;
+    }
+
+
+    function renderTileEditor() {
+  const activeCont = document.getElementById('active-tiles-editor');
+  const availCont = document.getElementById('available-tiles-editor');
+  activeCont.innerHTML = '';
+  availCont.innerHTML = '';
+  [activeCont, availCont].forEach(c => {
+    c.addEventListener('dragover', e => e.preventDefault());
+    c.addEventListener('drop', handleDrop);
+  });
+
+  state.tiles.forEach((tile, idx) => {
+    const el = document.createElement('div');
+    el.className = 'tile';
+    el.style.width = tile.width === 'half' ? '64px' : '140px';
+    el.classList.toggle('half', tile.width === 'half');
+    el.draggable = true;
+    el.dataset.index = idx;
+    el.dataset.type = 'active';
+    el.dataset.id = tile.id;
+
+    el.innerHTML = `
+      <div class="tile-icon-wrapper">
+        <span class="material-icons">${tile.icon}</span>
+      </div>
+      <div class="tile-body">
+        <span class="tile-text">${tile.label}</span>
+      </div>
+      <div class="tile-resize-lever"></div>
+    `;
+
+    el.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'active', index: idx, id: tile.id }));
+      el.style.opacity = '0.5';
+    });
+    el.addEventListener('dragend', e => { el.style.opacity = ''; });
+
+    const lever = el.querySelector('.tile-resize-lever');
+    let dragging = false, startX, startW;
+    const startResize = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (dragging) return;
+      dragging = true;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      startX = clientX;
+      startW = el.offsetWidth;
+      el.classList.add('resizing');
+      const onDrag = (e) => {
+        if (!dragging) return;
+        e.preventDefault();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const w = startW + clientX - startX;
+        tile.width = w < 120 ? 'half' : 'normal';
+        el.style.width = tile.width === 'half' ? '64px' : '140px';
+        el.classList.toggle('half', tile.width === 'half');
+      };
+      const onDragEnd = () => {
+        dragging = false;
+        el.classList.remove('resizing');
+        renderTileEditor();
+        renderTiles();
+        localStorage.setItem('tiles', JSON.stringify(state.tiles));
+        window.removeEventListener('mousemove', onDrag);
+        window.removeEventListener('touchmove', onDrag);
+        window.removeEventListener('mouseup', onDragEnd);
+        window.removeEventListener('touchend', onDragEnd);
+      };
+      window.addEventListener('mousemove', onDrag);
+      window.addEventListener('touchmove', onDrag, {passive: false});
+      window.addEventListener('mouseup', onDragEnd);
+      window.addEventListener('touchend', onDragEnd);
+    };
+    lever.addEventListener('mousedown', startResize);
+    lever.addEventListener('touchstart', startResize, {passive: false});
+    activeCont.appendChild(el);
+  });
+
+  window.availableTiles.forEach(tileDef => {
+    if (!state.tiles.some(t => t.id === tileDef.id)) {
+      const el = document.createElement('div');
+      el.className = 'tile';
+      el.style.width = '140px';
+      el.draggable = true;
+      el.dataset.type = 'available';
+      el.dataset.id = tileDef.id;
+      el.innerHTML = `
+        <div class="tile-icon-wrapper">
+          <span class="material-icons">${tileDef.icon}</span>
+        </div>
+        <div class="tile-body">
+          <span class="tile-text">${tileDef.label}</span>
+        </div>
+      `;
+      el.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'available', id: tileDef.id, tile: tileDef }));
+        el.style.opacity = '0.5';
+      });
+      el.addEventListener('dragend', e => { el.style.opacity = ''; });
+      availCont.appendChild(el);
+    }
+  });
+}
+
+
+        SystemAPI.initDefaultComponents();
+
+
+    // ================== НОВЫЕ ФУНКЦИИ И УЛУЧШЕНИЯ ==================
+
+
+// Анимация открытия
+function animatePanelOpen(panel) {
+  return new Promise(resolve => {
+    if (panel.classList.contains('opening') || panel.classList.contains('closing')) return resolve();
+    panel.classList.remove('closing');
+    panel.style.display = 'block';
+    shadeOverlay.classList.add('active');
+    panel.style.opacity = '';
+    panel.style.transform = '';
+    panel.classList.add('opening');
+    const onFinish = () => {
+      panel.classList.remove('opening');
+      panel.style.opacity = '1';
+      panel.style.transform = 'perspective(800px) rotateY(0deg) translateX(0) translateY(0) scale(1)';
+      panel.removeEventListener('animationend', onFinish);
+      resolve();
+    };
+    panel.addEventListener('animationend', onFinish, { once: true });
+  });
+}
+
+// Анимация закрытия
+function animatePanelClose(panel) {
+  return new Promise(resolve => {
+    if (panel.classList.contains('opening') || panel.classList.contains('closing')) return resolve();
+    panel.classList.add('closing');
+    const onFinish = () => {
+      panel.classList.remove('closing');
+      panel.style.display = 'none';
+      panel.style.opacity = '';
+      panel.style.transform = '';
+      if (qsPanel.style.display === 'none' && notifPanel.style.display === 'none') {
+        shadeOverlay.classList.remove('active');
+      }
+      panel.removeEventListener('animationend', onFinish);
+      resolve();
+    };
+    panel.addEventListener('animationend', onFinish, { once: true });
+  });
+}
+
+// Мгновенно скрыть панель (если была в процессе анимации)
+function hidePanelInstantly(panel) {
+  panel.classList.remove('opening', 'closing');
+  panel.style.display = 'none';
+  panel.style.opacity = '';
+  panel.style.transform = '';
+}
+
+function openQSOnly() {
+  // Мгновенно скрываем другую панель, если она видна
+  if (notifPanel.style.display === 'block') {
+    hidePanelInstantly(notifPanel);
+  }
+  // Сбрасываем редактор
+  qsPanel.classList.remove('qs-edit-mode');
+  renderTiles();
+  // Если панель уже открыта – ничего не делаем
+  if (qsPanel.style.display === 'block') return;
+  // Запускаем открытие
+  animatePanelOpen(qsPanel);
+}
+
+function openNotifOnly() {
+  if (qsPanel.style.display === 'block') {
+    hidePanelInstantly(qsPanel);
+  }
+  renderNotifications();
+  if (notifPanel.style.display === 'block') return;
+  animatePanelOpen(notifPanel);
+}
+
+function closeAllShade() {
+  hidePanelInstantly(qsPanel);
+  hidePanelInstantly(notifPanel);
+  shadeOverlay.classList.remove('active');
+  qsPanel.classList.remove('qs-edit-mode');
+}
+
+    document.getElementById('close-qs').onclick = closeAllShade;
+    document.getElementById('close-notif').onclick = closeAllShade;
+    shadeOverlay.onclick = closeAllShade;
+    document.getElementById('qs-settings-btn').onclick = () => { closeAllShade(); focusOrCreate('settings'); };
+    document.getElementById('brightness-slider').oninput = e => brightnessOverlay.style.opacity = (100 - e.target.value)/100 * 0.6;
+// Единая таблетка слева
+const unifiedPill = document.getElementById('unified-pill');
+const notifIndicator = document.getElementById('notif-indicator');
+if (unifiedPill) {
+  unifiedPill.addEventListener('click', (e) => {
+
+
+      openNotifOnly();
+
+
+  });
+}
+
+
+// Батарея (справа) открывает QS
+document.getElementById('status-pill').onclick = openQSOnly;
+
+
+// Долгое нажатие на батарею — меню питания
+let pressTimer;
+document.getElementById('status-pill').addEventListener('mousedown', () => {
+  pressTimer = setTimeout(() => document.getElementById('power-menu').classList.add('active'), 800);
+});
+document.getElementById('status-pill').addEventListener('touchstart', () => {
+  pressTimer = setTimeout(() => document.getElementById('power-menu').classList.add('active'), 800);
+}, { passive: true });
+document.getElementById('status-pill').addEventListener('mouseup', () => clearTimeout(pressTimer));
+document.getElementById('status-pill').addEventListener('touchend', () => clearTimeout(pressTimer));
+    // ---- Уведомления (улучшенные карточки со свайпом) ----
+    function updateNotifBadge() {
+  const indicator = document.getElementById('notif-indicator');
+  const count = state.notifications.length;
+  if (indicator) {
+    indicator.textContent = count;
+    indicator.style.display = count > 0 ? 'flex' : 'none';
+  }
+}
+
+
+    function dismissNotification(id) {
+  const card = document.querySelector(`.notification-card[data-notif-id="${id}"]`);
+  if (card) {
+    card.style.transition = 'max-height 0.3s ease, opacity 0.3s, margin 0.3s';
+    card.style.maxHeight = card.offsetHeight + 'px'; // фиксируем текущую высоту
+    requestAnimationFrame(() => {
+      card.style.maxHeight = '0';
+      card.style.opacity = '0';
+      card.style.margin = '0';
+      card.style.padding = '0';
+    });
+    setTimeout(() => {
+      card.remove();
+      state.notifications = state.notifications.filter(n => n.id !== id);
+      renderNotifications();
+    }, 300);
+  } else {
+    state.notifications = state.notifications.filter(n => n.id !== id);
+    renderNotifications();
+  }
+}
+
+
+    function attachSwipeToDismiss(card, notifId) {
+      let startX = 0, startY = 0, offsetX = 0, swiping = false, dismissed = false;
+      const threshold = 80;
+
+
+      card.addEventListener('touchstart', e => {
+        if (e.target.closest('button') || e.target.closest('.notif-clear-btn')) return;
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        offsetX = 0;
+        swiping = true;
+        dismissed = false;
+        card.classList.add('swiping');
+        card.style.transition = 'none';
+      }, { passive: false });
+
+
+      card.addEventListener('touchmove', e => {
+        if (!swiping || dismissed) return;
+        const dx = e.touches[0].clientX - startX;
+        const dy = e.touches[0].clientY - startY;
+        if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 20) {
+          swiping = false;
+          card.style.transition = '';
+          card.style.transform = '';
+          card.style.opacity = '';
+          card.classList.remove('swiping');
+          return;
+        }
+        offsetX = dx;
+        card.style.transform = `translateX(${dx}px)`;
+        card.style.opacity = Math.max(0, 1 - Math.abs(dx) / 200);
+      }, { passive: false });
+
+
+      card.addEventListener('touchend', e => {
+        if (!swiping || dismissed) return;
+        swiping = false;
+        card.classList.remove('swiping');
+        card.style.transition = 'transform 0.35s cubic-bezier(0.2, 0.9, 0.4, 1), opacity 0.25s';
+        if (Math.abs(offsetX) > threshold) {
+          dismissed = true;
+          card.style.transform = `translateX(${offsetX > 0 ? 150 : -150}%)`;
+          card.style.opacity = '0';
+          setTimeout(() => dismissNotification(notifId), 350);
+        } else {
+          card.style.transform = '';
+          card.style.opacity = '';
+        }
+        setTimeout(() => { if (!dismissed) card.style.transition = ''; }, 400);
+      });
+    }
+
+
+    function createNotificationCard(n, isGroupChild = false, forceCollapsed = false) {
+  // По умолчанию развёрнуто, если не задано и не принудительно свёрнуто
+  if (n.expanded === undefined) n.expanded = !forceCollapsed;
+
+
+  const card = document.createElement('div');
+  card.className = 'notification-card';
+  card.dataset.notifId = n.id;
+  if (isGroupChild) card.style.marginBottom = '0';
+
+
+  card.innerHTML = `
+    <span class="material-icons notif-icon">${n.icon}</span>
+    <div class="notif-body">
+      <div class="notif-title">${n.title}</div>
+      <div class="notif-text" style="white-space: ${n.expanded ? 'normal' : 'nowrap'}; overflow: ${n.expanded ? 'visible' : 'hidden'}; text-overflow: ${n.expanded ? 'unset' : 'ellipsis'};">${n.text}</div>
+      <div class="notif-time">${n.time}</div>
+      <div class="notif-extra" style="max-height:0; overflow:hidden; transition: max-height 0.35s cubic-bezier(0.2,0.9,0.4,1);">${n.content || ''}</div>
+    </div>
+    <div class="notif-actions-right">
+      <div class="notif-clear-btn" data-action="clear"><span class="material-icons">close</span></div>
+      <button class="expand-btn" data-action="expand"><span class="material-icons">unfold_more</span></button>
+    </div>
+  `;
+
+
+  const textEl = card.querySelector('.notif-text');
+  const extraEl = card.querySelector('.notif-extra');
+  const expandBtn = card.querySelector('[data-action="expand"]');
+  const clearBtn = card.querySelector('[data-action="clear"]');
+
+
+  // Останавливаем всплытие внутри панели
+  extraEl.addEventListener('click', (e) => e.stopPropagation());
+
+
+  // Обработчик удаления
+  clearBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dismissNotification(n.id);
+  });
+
+
+  // Если нет контента – скрываем кнопку расширения
+  if (!n.content || n.content.trim() === '') {
+    expandBtn.style.display = 'none';
+  } else {
+    // Установка начальной иконки и высоты панели
+    const setExpandedState = (expanded, animate = false) => {
+      if (expanded) {
+        if (animate) {
+          extraEl.style.transition = 'max-height 0.35s cubic-bezier(0.2,0.9,0.4,1)';
+          extraEl.style.maxHeight = Math.max(extraEl.scrollHeight * 2, 200) + 'px';
+        } else {
+          extraEl.style.transition = 'none';
+          extraEl.style.maxHeight = Math.max(extraEl.scrollHeight * 2, 200) + 'px';
+        }
+        expandBtn.querySelector('.material-icons').textContent = 'unfold_less';
+      } else {
+        extraEl.style.transition = animate ? 'max-height 0.35s cubic-bezier(0.2,0.9,0.4,1)' : 'none';
+        extraEl.style.maxHeight = '0';
+        expandBtn.querySelector('.material-icons').textContent = 'unfold_more';
+      }
+    };
+
+
+    setExpandedState(n.expanded, false);
+
+
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      n.expanded = !n.expanded;
+      setExpandedState(n.expanded, true);
+    });
+  }
+
+
+  // Клик по карточке открывает приложение
+  card.addEventListener('click', (e) => {
+    if (e.target.closest('button') || e.target.closest('.notif-clear-btn')) return;
+    closeAllShade();
+    focusOrCreate(n.app);
+  });
+
+
+  // Свайп для удаления
+  attachSwipeToDismiss(card, n.id);
+
+
+  // Корректировка высоты панели после вставки в DOM (если изначально развёрнуто)
+  if (n.expanded && extraEl.scrollHeight > 0) {
+    requestAnimationFrame(() => {
+      extraEl.style.maxHeight = Math.max(extraEl.scrollHeight * 2, 200) + 'px';
+    });
+  }
+if (typeof n.onRender === 'function') {
+    requestAnimationFrame(() => n.onRender(card));
+  }
+
+  return card;
+}
+
+
+    // Переопределяем renderNotifications (заменяет старый вариант)
+    function renderNotifications() {
+  const area = document.getElementById('notifications-area');
+  if (!state.notificationsEnabled) { area.innerHTML = ''; updateNotifBadge(); return; }
+  area.innerHTML = '';
+
+
+  const grouped = {};
+  state.notifications.forEach(n => {
+    if (!grouped[n.app]) grouped[n.app] = [];
+    grouped[n.app].push(n);
+  });
+
+
+  Object.entries(grouped).forEach(([app, notifs]) => {
+    const appName = getAppDisplayName(app);
+
+
+    if (notifs.length >= 2) {
+      // Групповая карточка
+      const groupCard = document.createElement('div');
+      groupCard.className = 'notification-group-card';
+
+
+      // Заголовок группы
+      const header = document.createElement('div');
+      header.className = 'notification-group-header';
+      header.innerHTML = `
+        <span class="material-icons">${notifs[0].icon}</span>
+        <div style="flex:1; font-weight:600;">${appName}</div>
+        <span style="font-size:12px; opacity:0.6;">${notifs.length} увед.</span>
+        <button class="clear-group-btn" title="Очистить все">
+          <span class="material-icons">delete_sweep</span>
+        </button>
+        <span class="material-icons expand-group-icon" style="transition: transform 0.2s;">expand_more</span>
+      `;
+
+
+      // Превью последнего уведомления (сворачиваемое)
+      const lastNotif = notifs[notifs.length - 1];
+// Принудительно свёрнутое превью (текст в одну строку)
+const preview = createNotificationCard(lastNotif, true, true);
+preview.classList.add('group-last-preview');
+// Убираем кнопку очистить, чтобы не удалить случайно, но оставляем развернуть
+const previewClearBtn = preview.querySelector('[data-action="clear"]');
+if (previewClearBtn) previewClearBtn.style.display = 'none';
+// Кнопку развернуть НЕ скрываем
+      // Список всех уведомлений (скрыт по умолчанию)
+      const list = document.createElement('div');
+      list.className = 'notification-group-list';
+      notifs.forEach(n => {
+        const item = createNotificationCard(n, true);
+        list.appendChild(item);
+      });
+
+
+      // Логика раскрытия/сворачивания
+      let isExpanded = false;
+header.addEventListener('click', (e) => {
+  if (e.target.closest('button')) return;
+  isExpanded = !isExpanded;
+  if (isExpanded) {
+    // Расширяем список до его реальной высоты
+    list.style.transition = 'max-height 0.35s cubic-bezier(0.2,0.9,0.4,1)';
+    list.style.overflow = 'hidden';
+    list.style.maxHeight = list.scrollHeight + 'px';
+    preview.style.display = 'none';
+    // После завершения анимации разрешаем свободное изменение высоты
+    const onTransitionEnd = () => {
+      list.style.maxHeight = 'none';
+      list.style.overflow = 'visible';
+      list.removeEventListener('transitionend', onTransitionEnd);
+    };
+    list.addEventListener('transitionend', onTransitionEnd);
+  } else {
+    // Сворачиваем: фиксируем текущую высоту и анимируем до 0
+    list.style.transition = 'max-height 0.35s cubic-bezier(0.2,0.9,0.4,1)';
+    list.style.overflow = 'hidden';
+    list.style.maxHeight = list.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      list.style.maxHeight = '0';
+    });
+    preview.style.display = 'flex';
+  }
+  header.querySelector('.expand-group-icon').style.transform = isExpanded ? 'rotate(180deg)' : '';
+});
+
+
+      // Очистить все уведомления этой группы
+      header.querySelector('.clear-group-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        notifs.forEach(n => dismissNotification(n.id));
+      });
+
+
+      groupCard.append(header, preview, list);
+      area.appendChild(groupCard);
+    } else {
+      // Одиночное уведомление
+      const card = createNotificationCard(notifs[0]);
+      area.appendChild(card);
+    }
+  });
+  updateNotifBadge();
+}
+
+
+    // ---- Intent API и диалог выбора приложения ----
+    state.typeRegistry = new Map();
+    state.defaultApps = new Map();
+    state.openWithCallback = null;
+
+
+    try {
+      const saved = JSON.parse(localStorage.getItem('typeRegistry') || '{}');
+      for (const [k,v] of Object.entries(saved)) state.typeRegistry.set(k, v);
+    } catch(e) {}
+    try {
+      const saved = JSON.parse(localStorage.getItem('defaultApps') || '{}');
+      for (const [k,v] of Object.entries(saved)) state.defaultApps.set(k, v);
+    } catch(e) {}
+
+
+    function saveTypeData() {
+      const tr = {}; state.typeRegistry.forEach((v,k) => tr[k] = v);
+      localStorage.setItem('typeRegistry', JSON.stringify(tr));
+      const da = {}; state.defaultApps.forEach((v,k) => da[k] = v);
+      localStorage.setItem('defaultApps', JSON.stringify(da));
+    }
+
+
+    function registerAppTypes(app) {
+      if (!app.intentFilters) return;
+      app.intentFilters.forEach(type => {
+        if (!state.typeRegistry.has(type)) state.typeRegistry.set(type, []);
+        const arr = state.typeRegistry.get(type);
+        if (!arr.includes(app.id)) arr.push(app.id);
+      });
+    }
+
+
+    window.BaklavaAPI = {
+  openApp(appId, intent) { focusOrCreate(appId, intent); },
+  closeApp(id) { closeWindow(id); },
+  openQS() { openQSOnly(); },
+  openNotifications() { openNotifOnly(); },
+  closeShade() { closeAllShade(); },
+  setWallpaper(w) { state.wallpaper = w; localStorage.setItem('wallpaper', w); applyWallpaper(); },
+  setAccent(c) { applyAccentColor(c); },
+  getState() { return state; },
+  registerApp(appDef) {
+    if (appDef && appDef.id && appDef.createWindow) {
+      state.installedApps.set(appDef.id, appDef);
+      registerAppTypes(appDef);
+      saveTypeData();
+      renderAppDrawer();
+      SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
+    }
+  },
+  registerTypeHandler(appId, type) {
+    if (!state.typeRegistry.has(type)) state.typeRegistry.set(type, []);
+    const arr = state.typeRegistry.get(type);
+    if (!arr.includes(appId)) arr.push(appId);
+    saveTypeData();
+  },
+  setDefaultApp(type, appId) {
+    state.defaultApps.set(type, appId);
+    saveTypeData();
+  },
+  resolveIntent(intent) {
+    return new Promise((resolve) => {
+      const type = intent?.type || intent?.mime || 'text/plain';
+      const defaultApp = state.defaultApps.get(type);
+      const handlers = state.typeRegistry.get(type) || [];
+      if (defaultApp && handlers.includes(defaultApp)) {
+        resolve(defaultApp);
+      } else if (handlers.length === 1) {
+        resolve(handlers[0]);
+      } else if (handlers.length > 1) {
+        showOpenWithDialog(type, intent, handlers, resolve);
+      } else {
+        resolve(null);
+      }
+    });
+  },
+  on(event, cb) { if (!window._be) window._be = {}; if (!window._be[event]) window._be[event] = []; window._be[event].push(cb); },
+  emit(event, data) { if (window._be?.[event]) window._be[event].forEach(cb => cb(data)); },
+  setNotifContent(notifId, htmlString) {
+    const card = document.querySelector(`.notification-card[data-notif-id="${notifId}"]`);
+    if (card) {
+      const extra = card.querySelector('.notif-extra');
+      if (extra) extra.innerHTML = htmlString;
+      const notif = state.notifications.find(n => n.id === notifId);
+      if (notif) notif.content = htmlString;
+    }
+  },
+  getNotifContentContainer(notifId) {
+    const card = document.querySelector(`.notification-card[data-notif-id="${notifId}"]`);
+    return card ? card.querySelector('.notif-extra') : null;
+  },
+  // Хранилище провайдеров живых обоев
+_liveWallpaperProviders: new Map(),
+_liveWallpaperInterval: null,
+_currentLiveProvider: null,
+
+// Зарегистрировать приложение как поставщик живых обоев
+registerLiveWallpaperProvider: function(appId, provider) {
+  if (provider && typeof provider.getBackground === 'function') {
+    window.liveWallpaperProviders.set(appId, provider);
+  }
+},
+unregisterLiveWallpaperProvider: function(appId) {
+  window.liveWallpaperProviders.delete(appId);
+  if (window.currentLiveProvider === appId) {
+    this.clearLiveWallpaper();
+  }
+},
+setLiveWallpaper: function(appId) {
+  const provider = window.liveWallpaperProviders.get(appId);
+  if (!provider) return false;
+  this.clearLiveWallpaper();
+  window.currentLiveProvider = appId;
+  state.wallpaper = 'live:' + appId;
+  localStorage.setItem('wallpaper', state.wallpaper);
+  // Запускаем интервал обновления фона и палитры
+  const update = () => {
+    if (typeof provider.getBackground === 'function') {
+      const bg = provider.getBackground();
+      if (bg) desktop.style.background = bg;
+    }
+    if (typeof provider.getColor === 'function') {
+      const color = provider.getColor();
+      if (color) applyAccentColor(color);
+    }
+  };
+  update();
+  window.liveWallpaperInterval = setInterval(update, provider.interval || 1000);
+  return true;
+},
+clearLiveWallpaper: function() {
+  if (window.liveWallpaperInterval) {
+    clearInterval(window.liveWallpaperInterval);
+    window.liveWallpaperInterval = null;
+  }
+  window.currentLiveProvider = null;
+  // Восстанавливаем статические обои
+  state.wallpaper = 'grad1'; // или последний статический
+  localStorage.setItem('wallpaper', state.wallpaper);
+  applyWallpaper();
+},
+openPopup(options) {
+        return new Promise((resolve) => {
+            const popup = new BaklavaPopup({
+                ...options,
+                onClose: resolve
+            });
+            // Возвращаем объект для возможного управления (закрытие извне)
+            resolve.popup = popup;
+        });
+    },
+
+};
+
+
+    function showOpenWithDialog(type, intent, handlers, resolve) {
+      state.openWithCallback = { type, intent, handlers, resolve };
+      const overlay = document.getElementById('open-with-overlay');
+      const grid = document.getElementById('open-with-grid');
+      const title = document.getElementById('open-with-title');
+      title.textContent = `Открыть ${intent?.label || type}`;
+      grid.innerHTML = '';
+      handlers.forEach(appId => {
+        const app = state.installedApps.get(appId);
+        if (!app) return;
+        const div = document.createElement('div');
+        div.className = 'open-with-app';
+        div.innerHTML = `<span class="material-icons">${app.icon || 'apps'}</span><span>${app.name}</span>`;
+        div.onclick = () => selectOpenWith(appId, false);
+        grid.appendChild(div);
+      });
+      overlay.classList.add('active');
+      document.getElementById('open-with-once').onclick = () => selectOpenWith(null, false);
+      document.getElementById('open-with-always').onclick = () => {
+        const first = handlers[0];
+        if (first) { state.defaultApps.set(type, first); saveTypeData(); selectOpenWith(first, true); }
+      };
+    }
+
+
+    function selectOpenWith(appId, isDefault) {
+      document.getElementById('open-with-overlay').classList.remove('active');
+      const cb = state.openWithCallback;
+      if (!cb) return;
+      const chosen = appId || cb.handlers[0];
+      cb.resolve(chosen);
+      state.openWithCallback = null;
+    }
+
+
+    document.getElementById('open-with-overlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) {
+        document.getElementById('open-with-overlay').classList.remove('active');
+        const cb = state.openWithCallback;
+        if (cb) { cb.resolve(cb.handlers[0]); state.openWithCallback = null; }
+      }
+    });
+
+
+    // Регистрируем типы для предустановленных приложений
+    preinstalledApps.forEach(app => {
+      if (app.intentFilters) registerAppTypes(app);
+    });
+
+
+
+
+    // ---- Ящик приложений и установка ----
+    function renderAppDrawer() {
+      const cont = document.getElementById('drawer-apps-container');
+      cont.innerHTML = '';
+      [...state.installedApps.keys()].forEach(appId => {
+        if (!state.installedApps.get(appId).hidden) {
+          const btn = document.createElement('div');
+          btn.className = 'desktop-icon';
+          btn.style.position = 'static';
+          btn.style.width = '100%';
+          btn.innerHTML = `<span class="material-icons">${getAppIcon(appId)}</span><span>${getAppDisplayName(appId)}</span>`;
+          btn.setAttribute('draggable', 'true');
+          btn.addEventListener('dragstart', e => {
+            e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'app', id: appId }));
+            e.dataTransfer.effectAllowed = 'copy';
+            btn.style.opacity = '0.5';
+          });
+          btn.addEventListener('dragend', e => { btn.style.opacity = ''; });
+          btn.addEventListener('click', () => { focusOrCreate(appId); toggleDrawer(false); });
+          cont.appendChild(btn);
+        }
+      });
+    }
+    function getAppIcon(appId) {
+      if (state.installedApps.has(appId)) return state.installedApps.get(appId).icon||'extension';
+      const m = { settings:'settings', calculator:'calculate', clock:'schedule', downloads:'download' };
+      return m[appId]||'apps';
+    }
+    function toggleDrawer(show) { appDrawer.classList.toggle('active', show); appDrawerOverlay.classList.toggle('active', show); }
+    document.getElementById('app-drawer-btn').onclick = () => { renderAppDrawer(); toggleDrawer(true); };
+    document.getElementById('close-drawer').onclick = () => toggleDrawer(false);
+    appDrawerOverlay.onclick = () => toggleDrawer(false);
+
+
+    document.getElementById('install-app-btn').onclick = function() { document.getElementById('install-app-file').click(); };
+    document.getElementById('install-app-file').onchange = function(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function(ev) {
+        try {
+          var code = ev.target.result;
+          var mod = {};
+          new Function('exports', code)(mod);
+          if (mod.id && mod.name && (typeof mod.createWindow === 'function' || (mod.tiles && mod.tiles.length))) {
+            state.installedApps.set(mod.id, mod);
+if (mod.tiles && mod.tiles.length) {
+  window.registerAppTiles(mod.id, mod.tiles);
+}
+            fs.addApp(mod.id, code);
+            SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
+            renderAppDrawer();
+            alert('Приложение "' + mod.name + '" установлено');
+          } else { alert('Ошибка: неверный формат приложения'); }
+        } catch (err) { alert('Ошибка установки: ' + err.message); }
+        e.target.value = '';
+      };
+      reader.readAsText(file);
+    };
+
+
+    const uninstallZone = document.getElementById('uninstall-dropzone');
+    uninstallZone.addEventListener('dragover', e => e.preventDefault());
+    uninstallZone.addEventListener('drop', e => {
+      e.preventDefault();
+      const raw = e.dataTransfer.getData('text/plain');
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      if (data.type === 'app') {
+        const appId = data.id;
+        if (state.installedApps.has(appId) && !preinstalledApps.some(a => a.id === appId)) {
+          state.installedApps.delete(appId);
+          fs.removeApp(appId);
+          window.unregisterAppTiles(appId);
+          SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
+          renderAppDrawer();
+        }
+      } else if (data.type === 'widget') {
+        const widgetEl = [...desktop.children].find(c => c.dataset?.widgetId === data.id);
+        if (widgetEl) widgetEl.remove();
+      }
+      uninstallZone.classList.remove('active');
+    });
+
+
+    document.getElementById('back-button').onclick = () => {
+      if (qsPanel.classList.contains('active')||notifPanel.classList.contains('active')) closeAllShade();
+      else if (appDrawer.classList.contains('active')) toggleDrawer(false);
+      else { const wins = [...state.windows.values()].filter(w=>!w.minimized); if (wins.length) closeWindow(wins[wins.length-1].id); }
+    };
+    function changeWallpaper() { state.wallpaper = state.wallpaper === 'grad1' ? 'grad2' : 'grad1'; localStorage.setItem('wallpaper', state.wallpaper); applyWallpaper(); }
+
+
+    desktop.addEventListener('contextmenu', e => {
+      e.preventDefault();
+      contextMenu.style.display = 'block';
+      contextMenu.style.left = e.clientX + 'px';
+      contextMenu.style.top = e.clientY + 'px';
+      let menuHTML = `<div class="context-item" id="ctx-settings"><span class="material-icons">settings</span> Настройки</div>`;
+      if (state.widgets.size > 0) {
+        state.widgets.forEach((def, id) => {
+          menuHTML += `<div class="context-item widget-menu-item" data-widget-id="${id}"><span class="material-icons">widgets</span> Виджет: ${def.name}</div>`;
+        });
+      }
+      contextMenu.innerHTML = menuHTML;
+      document.getElementById('ctx-settings').onclick = () => { focusOrCreate('settings'); contextMenu.style.display = 'none'; };
+      document.querySelectorAll('.widget-menu-item').forEach(item => {
+        item.onclick = () => {
+          const widgetId = item.dataset.widgetId;
+          createWidgetWindow(widgetId, e.clientX - 140, e.clientY - 100);
+          contextMenu.style.display = 'none';
+        };
+      });
+    });
+    window.addEventListener('click', () => contextMenu.style.display = 'none');
+
+
+    // ---- Инициализация и запуск ----
+    initBattery(); updateClocks(); setInterval(updateClocks, 1000); bootSequence();
+    window.addEventListener('resize', () => {
+      const desktopRect = desktop.getBoundingClientRect();
+      state.windows.forEach(obj => {
+        if (obj.isFullscreen) {
+          obj.element.style.left = desktopRect.left + 'px';
+          obj.element.style.top = desktopRect.top + 'px';
+          obj.element.style.width = desktopRect.width + 'px';
+          obj.element.style.height = desktopRect.height + 'px';
+        }
+      });
+    });
+    if (progressIndicator) {
+      progressIndicator.onclick = () => focusOrCreate('downloads');
+    }
+
+
+    // Кнопки редактора QS
+    const editTilesBtn = document.getElementById('edit-tiles-btn');
+    const backFromEditorBtn = document.getElementById('back-from-editor');
+
+
+    if (editTilesBtn) {
+      editTilesBtn.style.position = 'relative';
+      editTilesBtn.style.zIndex = '20';
+      editTilesBtn.style.pointerEvents = 'auto';
+      editTilesBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        qsPanel.classList.add('qs-edit-mode');
+        requestAnimationFrame(() => renderTileEditor());
+      });
+      editTilesBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        qsPanel.classList.add('qs-edit-mode');
+        requestAnimationFrame(() => renderTileEditor());
+      }, { passive: false });
+    }
+
+
+    if (backFromEditorBtn) {
+      backFromEditorBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        qsPanel.classList.remove('qs-edit-mode');
+        renderTiles();
+      });
+      backFromEditorBtn.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        qsPanel.classList.remove('qs-edit-mode');
+        renderTiles();
+      }, { passive: false });
+    }
+
+
+    // Глобальные ссылки для отладки
+    window.state = state;
+    window.renderNotifications = renderNotifications;
+    window.renderTiles = renderTiles;
+    window.closeAllShade = closeAllShade;
+    window.openQSOnly = openQSOnly;
+    window.openNotifOnly = openNotifOnly;
+  })();
