@@ -678,8 +678,6 @@ export function updateWindowCounter() {
   const openWindows = Array.from(state.windows.values()).filter(obj => !obj.minimized);
   document.getElementById('window-count-text').textContent = openWindows.length;
 }
-const statusBar = document.getElementById('status-bar');
-const fullscreenPreview = document.getElementById('fullscreen-preview');
 
 /**
  * Создать новое окно приложения
@@ -836,7 +834,6 @@ export function enterFullscreen(id) {
   if (!obj || obj.isFullscreen) return;
   const win = obj.element;
   const desktopRect = desktop.getBoundingClientRect();
-  const statusBar = document.getElementById('status-bar');
   const statusBarHeight = statusBar.offsetHeight;
 
   obj.prevRect = { left: win.style.left, top: win.style.top, width: win.style.width, height: win.style.height };
