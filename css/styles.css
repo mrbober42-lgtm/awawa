@@ -451,12 +451,54 @@ body:not(.dark-theme) #desktop {
   flex-direction: column;
   pointer-events: auto;
   opacity: 0;
-  transition: opacity 200ms ease;
+  transition: opacity 350ms var(--spring-easing), transform 350ms var(--spring-easing);
 }
 
 .edge-panel.active {
   display: flex;
   opacity: 1;
+}
+
+.edge-panel.panel-notifications {
+  transform: translateX(calc(100% - 20px));
+}
+.edge-panel.panel-notifications.active {
+  transform: translateX(0);
+}
+
+.edge-panel.panel-qs {
+  transform: translateX(calc(100% - 20px));
+}
+.edge-panel.panel-qs.active {
+  transform: translateX(0);
+}
+
+.edge-panel.panel-launcher {
+  transform: translateY(calc(100% - 20px));
+}
+.edge-panel.panel-launcher.active {
+  transform: translateY(0);
+}
+
+.edge-panel.panel-power-menu {
+  transform: translateX(calc(100% - 20px));
+}
+.edge-panel.panel-power-menu.active {
+  transform: translateX(0);
+}
+
+.edge-panel.panel-volume {
+  transform: translateX(calc(100% - 20px));
+}
+.edge-panel.panel-volume.active {
+  transform: translateX(0);
+}
+
+.edge-panel.panel-modules {
+  transform: translateY(calc(-100% + 20px));
+}
+.edge-panel.panel-modules.active {
+  transform: translateY(0);
 }
 
 .edge-panel-content {
@@ -470,32 +512,46 @@ body:not(.dark-theme) #desktop {
 
 /* Panel specific styles */
 .panel-notifications {
+  right: var(--frame-padding-right);
+  top: var(--frame-padding-top);
   width: 380px;
   max-height: 70%;
 }
 
 .panel-qs {
+  right: var(--frame-padding-right);
+  bottom: var(--frame-padding-bottom);
   width: 420px;
   max-height: 60%;
 }
 
 .panel-launcher {
-  width: 80%;
+  left: calc(var(--left-bar-width) + var(--frame-padding-left));
+  right: var(--frame-padding-right);
+  bottom: var(--frame-padding-bottom);
+  width: auto;
   max-height: 65%;
 }
 
 .panel-power-menu {
+  right: var(--frame-padding-right);
+  top: 50%;
   width: 280px;
   max-height: auto;
 }
 
 .panel-volume {
+  right: var(--frame-padding-right);
+  top: calc(50% + 100px);
   width: 240px;
   max-height: auto;
 }
 
 .panel-modules {
-  width: 80%;
+  left: calc(var(--left-bar-width) + var(--frame-padding-left));
+  right: var(--frame-padding-right);
+  top: var(--frame-padding-top);
+  width: auto;
   max-height: 50%;
 }
 

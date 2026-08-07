@@ -462,11 +462,27 @@ export class PanelManager {
           
           if (relY >= panelTop && relY <= panelBottom) {
             const setting = this.storage.get(`panelSettings.${panelId}`, 'edge');
-            if (setting === 'edge') {
+            if (setting === 'edge' || setting === 'hover') {
               this.openPanel(panelId);
             }
             break;
           }
+        }
+      }
+      
+      // Bottom edge detection for launcher
+      if (h - y < 15 && x > 64) {
+        const setting = this.storage.get('panelSettings.launcher', 'edge');
+        if (setting === 'edge' || setting === 'hover') {
+          this.openPanel('launcher');
+        }
+      }
+      
+      // Top edge detection for modules
+      if (y < 15 && x > 64) {
+        const setting = this.storage.get('panelSettings.modules', 'edge');
+        if (setting === 'edge' || setting === 'hover') {
+          this.openPanel('modules');
         }
       }
     });
