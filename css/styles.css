@@ -459,58 +459,64 @@ body:not(.dark-theme) #desktop {
   opacity: 1;
 }
 
-.edge-panel.panel-notifications {
-  transform: translateX(calc(100% - 20px));
-}
-.edge-panel.panel-notifications.active {
-  transform: translateX(0);
-}
-
-.edge-panel.panel-qs {
-  transform: translateX(calc(100% - 20px));
-}
-.edge-panel.panel-qs.active {
-  transform: translateX(0);
-}
-
-.edge-panel.panel-launcher {
-  transform: translateY(calc(100% - 20px));
-}
-.edge-panel.panel-launcher.active {
-  transform: translateY(0);
-}
-
-.edge-panel.panel-power-menu {
-  transform: translateX(calc(100% - 20px));
-}
-.edge-panel.panel-power-menu.active {
-  transform: translateX(0);
-}
-
+/* Панели справа */
+.edge-panel.panel-notifications,
+.edge-panel.panel-qs,
+.edge-panel.panel-power-menu,
 .edge-panel.panel-volume {
-  transform: translateX(calc(100% - 20px));
+  right: var(--frame-padding-right);
+  transform: translateX(100%);
 }
+
+.edge-panel.panel-notifications.active,
+.edge-panel.panel-qs.active,
+.edge-panel.panel-power-menu.active,
 .edge-panel.panel-volume.active {
   transform: translateX(0);
 }
 
-.edge-panel.panel-modules {
-  transform: translateY(calc(-100% + 20px));
+/* Панель снизу (лаунчер) */
+.edge-panel.panel-launcher {
+  left: calc(var(--left-bar-width) + var(--frame-padding-left));
+  right: var(--frame-padding-right);
+  bottom: var(--frame-padding-bottom);
+  transform: translateY(100%);
 }
+
+.edge-panel.panel-launcher.active {
+  transform: translateY(0);
+}
+
+/* Панель сверху (модули) */
+.edge-panel.panel-modules {
+  left: calc(var(--left-bar-width) + var(--frame-padding-left));
+  right: var(--frame-padding-right);
+  top: var(--frame-padding-top);
+  transform: translateY(-100%);
+}
+
 .edge-panel.panel-modules.active {
   transform: translateY(0);
 }
 
 .edge-panel-content {
   flex: 1;
-  background: var(--md-sys-color-surface-container-high);
-  border-radius: 16px;
-  padding: 16px;
-  overflow: auto;
-  box-shadow: var(--elevation-3);
+  background: transparent; /* Панели без фона - только рамка */
+  overflow: visible;
 }
 
-/* Panel specific styles */
+/* Содержимое панелей - внутри рамки, с собственным фоном если нужно */
+.panel-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+  background: var(--md-sys-color-surface-container-high);
+  border-radius: 16px;
+  box-shadow: var(--elevation-3);
+  margin: 8px;
+}
+
+/* Panel specific styles - позиционирование */
 .panel-notifications {
   right: var(--frame-padding-right);
   top: var(--frame-padding-top);
@@ -536,15 +542,25 @@ body:not(.dark-theme) #desktop {
 .panel-power-menu {
   right: var(--frame-padding-right);
   top: 50%;
+  transform: translateY(-50%);
   width: 280px;
   max-height: auto;
+}
+
+.panel-power-menu.active {
+  transform: translateY(-50%) translateX(0);
 }
 
 .panel-volume {
   right: var(--frame-padding-right);
   top: calc(50% + 100px);
+  transform: translateY(-50%);
   width: 240px;
   max-height: auto;
+}
+
+.panel-volume.active {
+  transform: translateY(-50%) translateX(0);
 }
 
 .panel-modules {

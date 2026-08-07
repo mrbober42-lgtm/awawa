@@ -14,11 +14,12 @@
   <svg class="frame-canvas" id="frameCanvas" xmlns="http://www.w3.org/2000/svg">
     <defs>
       <mask id="inverseFillMask">
-        <rect width="100%" height="100%" fill="black" />
-        <path id="framePathMask" fill="white" />
+        <rect width="100%" height="100%" fill="white" />
+        <path id="framePathMask" fill="black" />
       </mask>
     </defs>
-    <rect id="frameOuterFill" fill="#000000" mask="url(#inverseFillMask)" width="100%" height="100%" pointer-events="none" />
+    <!-- Инвертированная заливка: чёрная в тёмной теме, белая в светлой -->
+    <rect id="frameOuterFill" class="frame-inverted-fill" fill="#000000" mask="url(#inverseFillMask)" width="100%" height="100%" pointer-events="none" />
     <path id="frameStrokePath" class="frame-stroke" d="" />
   </svg>
 
