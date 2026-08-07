@@ -150,6 +150,69 @@ export class FrameManager {
   }
 
   /**
+   * Update panel content position based on depth
+   */
+  _updatePanelContent(panel) {
+    const panelEl = document.getElementById(`panel-${panel.id}`);
+    if (!panelEl) return;
+    
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const { top, right, bottom, left } = this.padding;
+    const x0 = left;
+    const y0 = top;
+    const x1 = w - right;
+    const y1 = h - bottom;
+    
+    const depth = panel.depth;
+    
+    // Скрываем панель если глубина мала
+    if (depth < 3) {
+      panelEl.classList.remove('active');
+      return;
+    }
+    
+    // Вычисляем размеры и позицию панели
+    const edgeLen = (panel.side === 'top' || panel.side === 'bottom') 
+      ? x1 - x0 
+      : y1 - y0;
+    
+    const panelLen = edgeLen * panel.size;
+    const center = panel.position * edgeLen;
+    
+    let leftPos, topPos, width, height;
+    
+    if (panel.side === 'top') {
+      leftPos = x0 + center - panelLen / 2;
+      topPos = y0;
+      width = panelLen;
+      height = depth;
+    } else if (panel.side === 'bottom') {
+      leftPos = x0 + center - panelLen / 2;
+      topPos = y1 - depth;
+      width = panelLen;
+      height = depth;
+    } else if (panel.side === 'left') {
+      leftPos = x0;
+      topPos = y0 + center - panelLen / 2;
+      width = depth;
+      height = panelLen;
+    } else if (panel.side === 'right') {
+      leftPos = x1 - depth;
+      topPos = y0 + center - panelLen / 2;
+      width = depth;
+      height = panelLen;
+    }
+    
+    // Применяем стили к панели
+    panelEl.style.left = leftPos + 'px';
+    panelEl.style.top = topPos + 'px';
+    panelEl.style.width = width + 'px';
+    panelEl.style.height = height + 'px';
+    panelEl.classList.add('active');
+  }
+
+  /**
    * Update frame geometry
    */
   update() {
@@ -175,6 +238,9 @@ export class FrameManager {
     if (this.maskPath) {
       this.maskPath.setAttribute('d', pathStr);
     }
+    
+    // Update panel positions
+    this.panels.forEach(panel => this._updatePanelContent(panel));
   }
 
   /**
