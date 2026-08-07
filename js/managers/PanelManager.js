@@ -18,6 +18,133 @@ export function animatePanelOpen(panel) {
   return new Promise(resolve => {
     if (panel.classList.contains('opening') || panel.classList.contains('closing')) return resolve();
     panel.classList.remove('closing');
+    panel.classList.add('opening');
+    panel.style.display = 'flex';
+    panel.classList.add('active');
+    setTimeout(() => {
+      panel.classList.remove('opening');
+      resolve();
+    }, 400);
+  });
+}
+
+/**
+ * Анимация закрытия панели
+ */
+export function animatePanelClose(panel) {
+  return new Promise(resolve => {
+    if (panel.classList.contains('opening') || panel.classList.contains('closing')) return resolve();
+    panel.classList.remove('opening');
+    panel.classList.add('closing');
+    panel.classList.remove('active');
+    setTimeout(() => {
+      panel.classList.remove('closing');
+      panel.style.display = 'none';
+      resolve();
+    }, 400);
+  });
+}
+
+/**
+ * Мгновенно скрыть панель
+ */
+export function hidePanelInstantly(panel) {
+  panel.classList.remove('opening', 'closing', 'active');
+  panel.style.display = 'none';
+}
+
+/**
+ * Открыть только QS
+ */
+export function openQSOnly() {
+  animatePanelOpen(qsPanel);
+  animatePanelClose(notifPanel);
+  shadeOverlay.classList.add('active');
+}
+
+/**
+ * Открыть только уведомления
+ */
+export function openNotifOnly() {
+  animatePanelOpen(notifPanel);
+  animatePanelClose(qsPanel);
+  shadeOverlay.classList.add('active');
+}
+
+/**
+ * Закрыть все шторки
+ */
+export function closeAllShade() {
+  animatePanelClose(qsPanel);
+  animatePanelClose(notifPanel);
+  shadeOverlay.classList.remove('active');
+}
+
+/**
+ * Переключить app drawer
+ */
+export function toggleDrawer(show) {
+  appDrawer.classList.toggle('active', show);
+  appDrawerOverlay.classList.toggle('active', show);
+}
+
+/**
+ * Инициализировать обработчики панелей
+ */
+export function initPanelHandlers() {
+  let pressTimer;
+
+  // QS и уведомления
+  document.getElementById('qs-btn').onclick = () => openQSOnly();
+  document.getElementById('notif-btn').onclick = () => openNotifOnly();
+  shadeOverlay.onclick = () => closeAllShade();
+
+  // Кнопки управления в QS
+  document.getElementById('qs-brightness').oninput = e => {
+    const v = e.target.value;
+    localStorage.setItem('brightness', v);
+    const overlay = document.getElementById('brightness-overlay');
+    if (overlay) overlay.style.opacity = (100 - v) / 100 * 0.6;
+  };
+
+  // Power menu (долгое нажатие)
+  document.getElementById('status-pill').addEventListener('mousedown', () => {
+    pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
+  });
+  document.getElementById('status-pill').addEventListener('touchstart', () => {
+    pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
+  }, { passive: true });
+  document.getElementById('status-pill').addEventListener('mouseup', () => clearTimeout(pressTimer));
+  document.getElementById('status-pill').addEventListener('touchend', () => clearTimeout(pressTimer));
+
+  // App drawer
+  document.getElementById('app-drawer-btn').onclick = () => {
+    renderAppDrawer();
+    toggleDrawer(true);
+  };
+  document.getElementById('close-drawer').onclick = () => toggleDrawer(false);
+  appDrawerOverlay.onclick = () => toggleDrawer(false);
+
+  // Кнопка назад
+  document.getElementById('back-button').onclick = () => {
+    if (qsPanel.classList.contains('active') || notifPanel.classList.contains('active')) {
+      closeAllShade();
+    } else if (appDrawer.classList.contains('active')) {
+      toggleDrawer(false);
+    } else {
+      const wins = [...state.windows.values()].filter(w => !w.minimized);
+      if (wins.length) {
+        closeWindow(wins[wins.length-1].id);
+      }
+    }
+  };
+}
+
+// Экспорт renderAppDrawer для использования внутри модуля
+import { renderAppDrawer as renderAppDrawerFn } from './AppManager.js';
+function renderAppDrawer() {
+  renderAppDrawerFn();
+}
     panel.style.display = 'block';
     shadeOverlay.classList.add('active');
     panel.style.opacity = '';
