@@ -1,7 +1,8 @@
 // AppManager.js - Управление приложениями (установка/удаление, запуск)
 import { state, registerAppTiles, unregisterAppTiles } from '../core/state.js';
 import { preinstalledApps } from '../core/constants.js';
-import { getAppDisplayName, getAppIcon, toggleDrawer } from '../core/utils.js';
+import { getAppDisplayName, getAppIcon } from '../core/utils.js';
+import { toggleDrawer } from './PanelManager.js';
 import { focusOrCreate, createWindow } from './WindowManager.js';
 import { FileSystem } from './FileSystem.js';
 

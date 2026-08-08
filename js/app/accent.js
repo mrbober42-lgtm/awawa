@@ -1,6 +1,6 @@
 // Приложение "Цвета" (Accent)
 import { applyAccentColor } from '../managers/ThemeManager.js';
-import state from '../core/state.js';
+import { state } from '../core/state.js';
 
 export const accentApp = {
   id: 'accent',
