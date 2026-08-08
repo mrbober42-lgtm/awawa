@@ -27,7 +27,7 @@ const state = {
 window.availableTiles = [];
 
 // Зарегистрировать плитки от приложения
-window.registerAppTiles = function(appId, tiles) {
+function registerAppTiles(appId, tiles) {
   if (!tiles || !tiles.length) return;
   if (!state.appTilesMap.has(appId)) state.appTilesMap.set(appId, []);
   const owned = state.appTilesMap.get(appId);
@@ -40,20 +40,21 @@ window.registerAppTiles = function(appId, tiles) {
     }
   });
   localStorage.setItem('appTilesMap', JSON.stringify(Array.from(state.appTilesMap.entries())));
-  if (typeof renderTileEditor === 'function') renderTileEditor();
-  if (typeof renderTiles === 'function') renderTiles();
-};
+  // Вызываем только если функции уже определены (будут определены в TileManager)
+  if (typeof window.renderTileEditor === 'function') window.renderTileEditor();
+  if (typeof window.renderTiles === 'function') window.renderTiles();
+}
 
 // Удалить плитки приложения
-window.unregisterAppTiles = function(appId) {
+function unregisterAppTiles(appId) {
   if (!state.appTilesMap.has(appId)) return;
   const tileIds = state.appTilesMap.get(appId);
   window.availableTiles = window.availableTiles.filter(t => !tileIds.includes(t.id));
   state.appTilesMap.delete(appId);
   localStorage.setItem('appTilesMap', JSON.stringify(Array.from(state.appTilesMap.entries())));
-  if (typeof renderTileEditor === 'function') renderTileEditor();
-  if (typeof renderTiles === 'function') renderTiles();
-};
+  if (typeof window.renderTileEditor === 'function') window.renderTileEditor();
+  if (typeof window.renderTiles === 'function') window.renderTiles();
+}
 
 // Экспорт для использования в других модулях
-export { state };
+export { state, registerAppTiles, unregisterAppTiles };
