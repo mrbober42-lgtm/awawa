@@ -691,6 +691,5 @@ export {
   updateTaskbarFullscreen,
   addMinimizedTab,
   removeMinimizedTab,
-  focusOrCreate,
-  updateWindowCounter
+  focusOrCreate
 };
