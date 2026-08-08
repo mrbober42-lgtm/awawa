@@ -280,7 +280,7 @@ function makeFullscreenDraggable(win, dragLine, id) {
 /**
  * Создать новое окно приложения
  */
-export function createWindow(appType, customContent, intent, sourceRect = null) {
+function createWindow(appType, customContent, intent, sourceRect = null) {
   const id = `${appType}-${Date.now()}`;
   const win = document.createElement('div');
   win.className = 'app-window';
@@ -399,14 +399,14 @@ export function createWindow(appType, customContent, intent, sourceRect = null) 
 /**
  * Переместить окно на передний план
  */
-export function bringToFront(win) {
+function bringToFront(win) {
   win.style.zIndex = ++state.nextZIndex;
 }
 
 /**
  * Закрыть окно
  */
-export function closeWindow(id) {
+function closeWindow(id) {
   const obj = state.windows.get(id);
   if (!obj) return;
   obj.element.classList.add('closing');
@@ -423,7 +423,7 @@ export function closeWindow(id) {
 /**
  * Обновить состояние taskbar для фулскрина
  */
-export function updateTaskbarFullscreen() {
+function updateTaskbarFullscreen() {
   let hasFullscreen = false;
   for (let [id, obj] of state.windows) {
     if (obj.isFullscreen && !obj.minimized) {
@@ -437,7 +437,7 @@ export function updateTaskbarFullscreen() {
 /**
  * Свернуть окно
  */
-export function minimizeWindow(id) {
+function minimizeWindow(id) {
   const obj = state.windows.get(id);
   if (!obj || obj.minimized) return;
   const container = document.getElementById('minimized-windows');
@@ -495,7 +495,7 @@ export function minimizeWindow(id) {
 /**
  * Добавить вкладку свернутого окна
  */
-export function addMinimizedTab(windowObj) {
+function addMinimizedTab(windowObj) {
   const container = document.getElementById('minimized-windows');
   const app = state.installedApps.get(windowObj.appType);
   const icon = app ? app.icon : 'apps';
@@ -511,7 +511,7 @@ export function addMinimizedTab(windowObj) {
 /**
  * Удалить вкладку свернутого окна
  */
-export function removeMinimizedTab(windowId) {
+function removeMinimizedTab(windowId) {
   const tab = document.querySelector(`.minimized-tab[data-window-id="${windowId}"]`);
   if (tab) tab.remove();
 }
@@ -519,7 +519,7 @@ export function removeMinimizedTab(windowId) {
 /**
  * Восстановить свернутое окно
  */
-export function restoreWindow(id) {
+function restoreWindow(id) {
   const obj = state.windows.get(id);
   if (!obj || !obj.minimized) return;
   const tab = document.querySelector(`.minimized-tab[data-window-id="${id}"]`);
@@ -554,7 +554,7 @@ export function restoreWindow(id) {
 /**
  * Войти в полноэкранный режим
  */
-export function enterFullscreen(id) {
+function enterFullscreen(id) {
   const obj = state.windows.get(id);
   if (!obj || obj.isFullscreen) return;
   const win = obj.element;
@@ -610,7 +610,7 @@ export function enterFullscreen(id) {
 /**
  * Выйти из полноэкранного режима
  */
-export function exitFullscreen(id) {
+function exitFullscreen(id) {
   const obj = state.windows.get(id);
   if (!obj || !obj.isFullscreen) return;
   const win = obj.element;
@@ -674,7 +674,7 @@ function focusOrCreate(app, intent) {
 /**
  * Обновить счетчик окон
  */
-export function updateWindowCounter() {
+function updateWindowCounter() {
   const openWindows = Array.from(state.windows.values()).filter(obj => !obj.minimized);
   document.getElementById('window-count-text').textContent = openWindows.length;
 }
