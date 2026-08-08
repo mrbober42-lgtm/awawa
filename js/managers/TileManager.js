@@ -1,11 +1,11 @@
 // TileManager.js - Плитки QS (Quick Settings)
 import { state } from '../core/state.js';
+import { SystemAPI } from './SystemAPI.js';
 
 /**
  * Отрисовать плитки QS
  */
 export function renderTiles() { 
-  const SystemAPI = window.SystemAPI;
   SystemAPI?.getComponent('qsPanel')?.render(state.tiles); 
 }
 

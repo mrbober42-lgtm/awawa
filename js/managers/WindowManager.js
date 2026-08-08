@@ -657,7 +657,7 @@ export function exitFullscreen(id) {
 /**
  * Сфокусировать или создать окно
  */
-export function focusOrCreate(app, intent) {
+function focusOrCreate(app, intent) {
   for (let [id, obj] of state.windows) {
     if (obj.appType === app && !obj.minimized) { bringToFront(obj.element); return; }
   }

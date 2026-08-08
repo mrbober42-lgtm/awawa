@@ -1,9 +1,11 @@
 // AppManager.js - Управление приложениями (установка/удаление, запуск)
-import { state } from '../core/state.js';
+import { state, registerAppTiles, unregisterAppTiles } from '../core/state.js';
+import { preinstalledApps } from '../core/constants.js';
 import { getAppDisplayName, getAppIcon, toggleDrawer } from '../core/utils.js';
 import { focusOrCreate, createWindow } from './WindowManager.js';
+import { FileSystem } from './FileSystem.js';
 
-const fs = window.fs;
+const fs = new FileSystem();
 
 /**
  * Отрисовать ящик приложений (app drawer)
@@ -124,7 +126,7 @@ export function initAppInstallHandlers(SystemAPI) {
           state.installedApps.set(mod.id, mod);
           
           if (mod.tiles && mod.tiles.length) {
-            window.registerAppTiles(mod.id, mod.tiles);
+            registerAppTiles(mod.id, mod.tiles);
           }
           
           fs.addApp(mod.id, code);
@@ -153,11 +155,11 @@ export function initAppInstallHandlers(SystemAPI) {
     
     if (data.type === 'app') {
       const appId = data.id;
-      const preinstalledApps = window.preinstalledApps || [];
-      if (state.installedApps.has(appId) && !preinstalledApps.some(a => a.id === appId)) {
+      const preinstalledAppsList = preinstalledApps || [];
+      if (state.installedApps.has(appId) && !preinstalledAppsList.some(a => a.id === appId)) {
         state.installedApps.delete(appId);
         fs.removeApp(appId);
-        window.unregisterAppTiles(appId);
+        unregisterAppTiles(appId);
         SystemAPI.getComponent('desktop')?.renderIcons(Array.from(state.installedApps.values()));
         renderAppDrawer();
       }
