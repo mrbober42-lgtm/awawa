@@ -1,6 +1,7 @@
 // NotificationManager.js - Управление уведомлениями
 import { state } from '../core/state.js';
-import { getAppDisplayName, closeAllShade } from '../core/utils.js';
+import { getAppDisplayName } from '../core/utils.js';
+import { closeAllShade } from './PanelManager.js';
 import { focusOrCreate } from './WindowManager.js';
 
 /**
