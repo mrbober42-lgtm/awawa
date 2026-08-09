@@ -1,8 +1,9 @@
 // Приложение "Настройки" (Settings)
-import state from '../core/state.js';
+import { state } from '../core/state.js';
 import { applyAccentColor, applyWallpaper } from '../managers/ThemeManager.js';
 import { renderNotifications } from '../managers/NotificationManager.js';
 import { renderTiles } from '../managers/TileManager.js';
+import { toggleDrawer } from '../managers/AppManager.js';
 
 export const settingsApp = {
   id: 'settings',

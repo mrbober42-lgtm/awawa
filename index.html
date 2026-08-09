@@ -33,8 +33,14 @@
   <div id="progress-chips-container" style="display: flex; gap: 8px;"></div>
 </div>
     <div class="status-right">
-  <div id="status-pill" class="status-chip">
+  <button id="qs-btn" class="status-chip" style="border:none; background:transparent; cursor:pointer; color:var(--md-sys-color-on-surface);">
     <span class="material-icons">wifi</span>
+  </button>
+  <button id="notif-btn" class="status-chip" style="border:none; background:transparent; cursor:pointer; color:var(--md-sys-color-on-surface); position:relative;">
+    <span class="material-icons">notifications</span>
+    <span id="notif-badge" style="display:none; position:absolute; top:-4px; right:-4px; background:var(--md-sys-color-error); color:var(--md-sys-color-on-error); border-radius:50%; width:16px; height:16px; font-size:10px; align-items:center; justify-content:center;">0</span>
+  </button>
+  <div id="status-pill" class="status-chip">
     <div id="battery-bar"><div id="battery-level" style="width:87%"></div></div>
     <span id="battery-percent">67%</span>
   </div>
