@@ -168,8 +168,9 @@ export function makeResizable(el, handle, snap) {
 /**
  * Получить отображаемое имя приложения
  */
-export function getAppDisplayName(appId, state) {
-  if (state.installedApps.has(appId)) return state.installedApps.get(appId).name;
+export function getAppDisplayName(appId) {
+  const s = window.state || state;
+  if (s && s.installedApps && s.installedApps.has(appId)) return s.installedApps.get(appId).name;
   const m = { settings: 'Настройки', calculator: 'Калькулятор', clock: 'Часы', downloads: 'Загрузки' };
   return m[appId] || appId;
 }
@@ -177,9 +178,11 @@ export function getAppDisplayName(appId, state) {
 /**
  * Получить иконку приложения
  */
-export function getAppIcon(appId, state) {
-  if (!state || !state.installedApps) return 'apps';
-  if (state.installedApps.has(appId)) return state.installedApps.get(appId).icon || 'extension';
-  const m = { settings: 'settings', calculator: 'calculate', clock: 'schedule', downloads: 'download' };
-  return m[appId] || 'apps';
+export function getAppIcon(appId) {
+  const s = window.state || state;
+  if (!s || !s.installedApps || !s.installedApps.has(appId)) {
+    const m = { settings: 'settings', calculator: 'calculate', clock: 'schedule', downloads: 'download' };
+    return m[appId] || 'apps';
+  }
+  return s.installedApps.get(appId).icon || 'extension';
 }
