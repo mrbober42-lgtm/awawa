@@ -62,7 +62,7 @@ export function renderAppDrawer() {
       btn.className = 'desktop-icon';
       btn.style.position = 'static';
       btn.style.width = '100%';
-      btn.innerHTML = `<span class="material-icons">${getAppIcon(appId, state)}</span><span>${getAppDisplayName(appId, state)}</span>`;
+      btn.innerHTML = `<span class="material-icons">${getAppIcon(appId)}</span><span>${getAppDisplayName(appId)}</span>`;
       btn.setAttribute('draggable', 'true');
       btn.addEventListener('dragstart', e => {
         e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'app', id: appId }));
