@@ -3,7 +3,6 @@ import { state } from '../core/state.js';
 import { renderTiles } from './TileManager.js';
 import { renderNotifications } from './NotificationManager.js';
 import { focusOrCreate, closeWindow } from './WindowManager.js';
-import { renderAppDrawer as renderAppDrawerFn } from './AppManager.js';
 
 const qsPanel = document.getElementById('qs-panel');
 const notifPanel = document.getElementById('notif-panel');
@@ -97,8 +96,10 @@ export function closeAllShade() {
  * Переключить app drawer
  */
 export function toggleDrawer(show) {
-  appDrawer.classList.toggle('active', show);
-  appDrawerOverlay.classList.toggle('active', show);
+  const appDrawer = document.getElementById('app-drawer');
+  const appDrawerOverlay = document.getElementById('app-drawer-overlay');
+  if (appDrawer) appDrawer.classList.toggle('active', show);
+  if (appDrawerOverlay) appDrawerOverlay.classList.toggle('active', show);
 }
 
 /**

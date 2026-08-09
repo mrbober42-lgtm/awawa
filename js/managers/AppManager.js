@@ -2,25 +2,67 @@
 import { state, registerAppTiles, unregisterAppTiles } from '../core/state.js';
 import { preinstalledApps } from '../core/constants.js';
 import { getAppDisplayName, getAppIcon } from '../core/utils.js';
-import { toggleDrawer } from './PanelManager.js';
 import { focusOrCreate, createWindow } from './WindowManager.js';
 import { FileSystem } from './FileSystem.js';
 
 const fs = new FileSystem();
 
 /**
+ * Открыть/закрыть ящик приложений
+ */
+export function toggleDrawer(show) {
+  const appDrawer = document.getElementById('app-drawer');
+  const appDrawerOverlay = document.getElementById('app-drawer-overlay');
+  if (appDrawer) appDrawer.classList.toggle('active', show);
+  if (appDrawerOverlay) appDrawerOverlay.classList.toggle('active', show);
+}
+
+/**
+ * Открыть только QS панель
+ */
+export function openQSOnly() {
+  const qsPanel = document.getElementById('qs-panel');
+  const notifPanel = document.getElementById('notif-panel');
+  const appDrawer = document.getElementById('app-drawer');
+  const powerMenu = document.getElementById('power-menu');
+  
+  if (qsPanel) qsPanel.classList.add('active');
+  if (notifPanel) notifPanel.classList.remove('active');
+  if (appDrawer) appDrawer.classList.remove('active');
+  if (powerMenu) powerMenu.classList.remove('active');
+}
+
+/**
+ * Открыть только панель уведомлений
+ */
+export function openNotifOnly() {
+  const qsPanel = document.getElementById('qs-panel');
+  const notifPanel = document.getElementById('notif-panel');
+  const appDrawer = document.getElementById('app-drawer');
+  const powerMenu = document.getElementById('power-menu');
+  
+  if (qsPanel) qsPanel.classList.remove('active');
+  if (notifPanel) notifPanel.classList.add('active');
+  if (appDrawer) appDrawer.classList.remove('active');
+  if (powerMenu) powerMenu.classList.remove('active');
+}
+
+/**
  * Отрисовать ящик приложений (app drawer)
  */
 export function renderAppDrawer() {
   const cont = document.getElementById('drawer-apps-container');
+  if (!cont || !state || !state.installedApps) return;
+  
   cont.innerHTML = '';
   [...state.installedApps.keys()].forEach(appId => {
-    if (!state.installedApps.get(appId).hidden) {
+    const app = state.installedApps.get(appId);
+    if (app && !app.hidden) {
       const btn = document.createElement('div');
       btn.className = 'desktop-icon';
       btn.style.position = 'static';
       btn.style.width = '100%';
-      btn.innerHTML = `<span class="material-icons">${getAppIcon(appId)}</span><span>${getAppDisplayName(appId)}</span>`;
+      btn.innerHTML = `<span class="material-icons">${getAppIcon(appId, state)}</span><span>${getAppDisplayName(appId, state)}</span>`;
       btn.setAttribute('draggable', 'true');
       btn.addEventListener('dragstart', e => {
         e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'app', id: appId }));
