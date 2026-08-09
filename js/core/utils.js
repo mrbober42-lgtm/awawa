@@ -178,6 +178,7 @@ export function getAppDisplayName(appId, state) {
  * Получить иконку приложения
  */
 export function getAppIcon(appId, state) {
+  if (!state || !state.installedApps) return 'apps';
   if (state.installedApps.has(appId)) return state.installedApps.get(appId).icon || 'extension';
   const m = { settings: 'settings', calculator: 'calculate', clock: 'schedule', downloads: 'download' };
   return m[appId] || 'apps';

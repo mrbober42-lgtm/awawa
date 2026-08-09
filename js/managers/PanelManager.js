@@ -108,12 +108,12 @@ export function initPanelHandlers() {
   let pressTimer;
 
   // QS и уведомления
-  document.getElementById('qs-btn').onclick = () => openQSOnly();
-  document.getElementById('notif-btn').onclick = () => openNotifOnly();
-  shadeOverlay.onclick = () => closeAllShade();
+  const qsBtn = document.getElementById('qs-btn'); if (qsBtn) qsBtn.onclick = () => openQSOnly();
+  const notifBtn = document.getElementById('notif-btn'); if (notifBtn) notifBtn.onclick = () => openNotifOnly();
+  if (shadeOverlay) shadeOverlay.onclick = () => closeAllShade();
 
   // Кнопки управления в QS
-  document.getElementById('qs-brightness').oninput = e => {
+  const brightnessSlider = document.getElementById('qs-brightness'); if (brightnessSlider) brightnessSlider.oninput = e => {
     const v = e.target.value;
     localStorage.setItem('brightness', v);
     const overlay = document.getElementById('brightness-overlay');
@@ -121,25 +121,28 @@ export function initPanelHandlers() {
   };
 
   // Power menu (долгое нажатие)
-  document.getElementById('status-pill').addEventListener('mousedown', () => {
-    pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
-  });
-  document.getElementById('status-pill').addEventListener('touchstart', () => {
-    pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
-  }, { passive: true });
-  document.getElementById('status-pill').addEventListener('mouseup', () => clearTimeout(pressTimer));
-  document.getElementById('status-pill').addEventListener('touchend', () => clearTimeout(pressTimer));
+  const statusPill = document.getElementById('status-pill');
+  if (statusPill) {
+    statusPill.addEventListener('mousedown', () => {
+      pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
+    });
+    statusPill.addEventListener('touchstart', () => {
+      pressTimer = setTimeout(() => powerMenu.classList.add('active'), 800);
+    }, { passive: true });
+    statusPill.addEventListener('mouseup', () => clearTimeout(pressTimer));
+    statusPill.addEventListener('touchend', () => clearTimeout(pressTimer));
+  }
 
   // App drawer
-  document.getElementById('app-drawer-btn').onclick = () => {
+  const appDrawerBtn = document.getElementById('app-drawer-btn'); if (appDrawerBtn) appDrawerBtn.onclick = () => {
     renderAppDrawerFn();
     toggleDrawer(true);
   };
-  document.getElementById('close-drawer').onclick = () => toggleDrawer(false);
-  appDrawerOverlay.onclick = () => toggleDrawer(false);
+  const closeDrawerBtn = document.getElementById('close-drawer'); if (closeDrawerBtn) closeDrawerBtn.onclick = () => toggleDrawer(false);
+  if (appDrawerOverlay) appDrawerOverlay.onclick = () => toggleDrawer(false);
 
   // Кнопка назад
-  document.getElementById('back-button').onclick = () => {
+  const backButton = document.getElementById('back-button'); if (backButton) backButton.onclick = () => {
     if (qsPanel.classList.contains('active') || notifPanel.classList.contains('active')) {
       closeAllShade();
     } else if (appDrawer.classList.contains('active')) {
